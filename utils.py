@@ -706,7 +706,7 @@ def rolljump2(max_attempts=0):
             time.sleep(1)
             # 找warp1
             log_message("INFO", "查找warp1")
-            if safe_find_icon("warp1", control_panel, max_attempts=3,threshold=0.9,cnn_threshold=0.65):
+            if safe_find_icon("warp1", control_panel, max_attempts=3):
                 log_message("INFO", "找到warp1，等待3秒后再次点击")
                 pyautogui.doubleClick()
                 time.sleep(3)
