@@ -1,0 +1,16 @@
+*.log
+*.pyc
+.DS_Store
+license*
+__pycache__/
+local/
+pic/
+traindata/*
+machine/*
+model/*
+build/
+dist/
+debug_icons/
+licensing/
+keys/
+~
