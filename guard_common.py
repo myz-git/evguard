@@ -6,7 +6,6 @@ import time
 import cv2
 import os
 import pynput
-import torch
 from PIL import Image
 from datetime import datetime
 
@@ -27,9 +26,8 @@ from utils import (
     screen_regions,
     ICON_DIR,
     CnnConfig,
-    _get_cnn_model,
-    _TRANSFORM,
-    _DEVICE,
+    find_icon_count_cnn,
+    find_icon_detailed_cnn,
 )
 
 ########################################################
@@ -112,121 +110,6 @@ def on_release(key):
     global ctrl_pressed
     if key == keyboard.Key.ctrl_l or key == keyboard.Key.ctrl_r:
         ctrl_pressed = False
-
-def _softmax_pos_prob(logits: torch.Tensor) -> float:
-    """logits shape (1,2) -> pos prob"""
-    return torch.softmax(logits, dim=1)[0, 1].item()
-
-
-def find_icon_count_cnn(
-    icon_name: str,
-    max_attempts: int = 1,
-    region=None,
-    screen=None,
-    cfg: CnnConfig | None = None,
-):
-    """
-    统计检测到的图标数量（同一类型多个实例）
-    - 先用模板匹配定位候选
-    - 再用 CNN 模型验证候选是否为目标
-    返回: (count, details_list)
-    details: {icon_name, match_val, prob, position(x,y)}
-    """
-    if cfg is None:
-        cfg = CnnConfig()
-
-    if region is None:
-        fx, fy = pyautogui.size()
-        region = (0, 0, fx, fy)
-        do_adjust = False
-    else:
-        do_adjust = True
-
-    # 模板
-    template_path = os.path.join(ICON_DIR, f"{icon_name}-1.png")
-    template = cv2.imread(template_path, cv2.IMREAD_COLOR)
-    if template is None:
-        raise FileNotFoundError(f"模板图像无法加载: {template_path}")
-
-    template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-    h, w = template_gray.shape[:2]
-
-    attempts = 0
-    while attempts < max_attempts:
-        if screen is None:
-            screen = capture_screen_area(region, do_adjust=do_adjust)
-
-        screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
-        res = cv2.matchTemplate(screen_gray, template_gray, cv2.TM_CCOEFF_NORMED)
-
-        ys, xs = np.where(res >= cfg.template_threshold)
-        if len(xs) == 0:
-            attempts += 1
-            continue
-
-        # 候选点 + 分数（降序）
-        cands = [(int(x), int(y), float(res[y, x])) for x, y in zip(xs, ys)]
-        cands.sort(key=lambda t: t[2], reverse=True)
-
-        # 去重 + TopK
-        min_dist = max(1, int(min(w, h) * float(cfg.dedup_ratio)))
-        min_dist2 = min_dist * min_dist
-        filtered = []
-        for x, y, s in cands:
-            keep = True
-            for fx, fy, fs in filtered:
-                if (x - fx) * (x - fx) + (y - fy) * (y - fy) <= min_dist2:
-                    keep = False
-                    break
-            if keep:
-                filtered.append((x, y, s))
-            if len(filtered) >= int(cfg.topk):
-                break
-
-        model = _get_cnn_model(icon_name)
-        r = adjust_region(region) if do_adjust else region
-
-        found_count = 0
-        details_list = []
-
-        for x0, y0, match_val in filtered:
-            crop = screen[y0:y0 + h, x0:x0 + w]
-            if crop.size == 0 or crop.shape[0] != h or crop.shape[1] != w:
-                continue
-
-            rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-            pil = Image.fromarray(rgb)
-            x = _TRANSFORM(pil).unsqueeze(0).to(_DEVICE)
-
-            with torch.no_grad():
-                logits = model(x)
-                prob = _softmax_pos_prob(logits)
-
-            if prob >= cfg.cnn_threshold:
-                px = x0 + r[0] + w // 2
-                py = y0 + r[1] + h // 2
-                details_list.append({
-                    'icon_name': icon_name,
-                    'match_val': match_val,
-                    'prob': prob,
-                    'position': (px, py),
-                })
-                found_count += 1
-
-        if found_count > 0:
-            return found_count, details_list
-
-        attempts += 1
-
-    return 0, []
-
-
-def find_icon_detailed_cnn(icon_name: str, max_attempts=1, region=None, screen=None, cfg: CnnConfig | None = None):
-    """兼容旧逻辑：返回 (found, first_detail)"""
-    cnt, details = find_icon_count_cnn(icon_name, max_attempts=max_attempts, region=region, screen=screen, cfg=cfg)
-    if cnt > 0:
-        return True, details[0]
-    return False, {'icon_name': icon_name, 'match_val': 0, 'prob': 0.0, 'position': None, 'found': False}
 
 ctrl_pressed = False
 
@@ -332,7 +215,8 @@ def main(mode=MODE_A_LOWSEC):
             # 每轮只截屏一次，供所有图标检测共用，缩短 A 模式间隔（否则 A 多一次截屏+匹配约 5s）
             screen = capture_screen_area(right_panel)
 
-            cfg_icon = CnnConfig(template_threshold=0.75, cnn_threshold=0.80, topk=30, dedup_ratio=0.5, debug_save=False)
+            # 默认阈值统一在 utils.CnnConfig 中配置，此处用默认即可；特殊图标（如敌对）在调用时传 cnn_threshold 等覆盖
+            cfg_icon = CnnConfig()
 
 
             # A模式：检测「中立声望」
@@ -378,11 +262,16 @@ def main(mode=MODE_A_LOWSEC):
 
 
             # 检测「敌对」
-            didui_count, didui_details_list = find_icon_count_cnn("didui", max_attempts=1, region=right_panel, screen=screen, cfg=cfg_icon)
+            # 敌对图标易误检，单独提高 CNN 阈值减少误报
+            didui_count, didui_details_list = find_icon_count_cnn("didui", max_attempts=1, region=right_panel, screen=screen, cfg=cfg_icon, threshold=0.9,cnn_threshold=0.95)
+            # didui_count, didui_details_list = find_icon_count_cnn("didui", max_attempts=1, region=right_panel, screen=screen, cfg=cfg_icon)
             if didui_count > 0:
                 total_icon_count += didui_count
                 for detail in didui_details_list:
                     icon_details_summary.append(("敌对", detail))
+                    print(f"[检测] 敌对声望 - 匹配值: {detail['match_val']:.3f}, "
+                          f"模型预测: {detail.get('prob', 0)}, "
+                          f"位置: {detail['position']}")
 
             # 检测「不良」
             buliang_count, buliang_details_list = find_icon_count_cnn("buliang", max_attempts=1, region=right_panel, screen=screen, cfg=cfg_icon)

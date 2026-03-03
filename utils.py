@@ -13,7 +13,7 @@ import json
 import time
 import logging
 from dataclasses import dataclass
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List
 
 import cv2
 import numpy as np
@@ -66,11 +66,17 @@ logging.getLogger("cnocr").setLevel(logging.ERROR)
 logging.getLogger("cnstd").setLevel(logging.ERROR)
 
 logging.basicConfig(
-    level=logging.WARNING,
+    level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[logging.FileHandler("task.log", mode="a", encoding="utf-8"), logging.StreamHandler()],
     force=True,
 )
+# INFO 只写 task.log，不输出到终端；终端仅显示 WARNING 及以上
+root = logging.getLogger()
+for h in root.handlers:
+    if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+        h.setLevel(logging.WARNING)
+        break
 
 # =========================
 # 控制台 WARNING 过滤（fsd0/fsd10 不输出「未找到」类 WARNING）
@@ -364,8 +370,8 @@ class CnnConfig:
     # dedup_ratio是用来去重,可以小一些,减少误触
     # debug_save是用来保存候选crop到DEBUG_DIR,可以打开,方便调试
 
-    template_threshold: float = 0.75  # 模板匹配阈值
-    cnn_threshold: float = 0.80       # CNN pos 置信度阈值
+    template_threshold: float = 0.8  # 模板匹配阈值
+    cnn_threshold: float = 0.9       # CNN pos 置信度阈值
     topk: int = 20                    # 只验证匹配分数Top-K候选点
     dedup_ratio: float = 0.5          # 去重半径比例：min(w,h)*dedup_ratio
     debug_save: bool = False          # 是否保存候选crop到DEBUG_DIR
@@ -427,6 +433,86 @@ def _get_cnn_model(icon: str, model_dir=MODEL_DIR) -> nn.Module:
     log_message("INFO", f"加载CNN模型: {model_path}")
     return model
 
+
+def _find_icon_candidates_one_shot(
+    icon: str,
+    region: Tuple[int, int, int, int],
+    screen: np.ndarray,
+    cfg: CnnConfig,
+    do_adjust: bool,
+    icon_dir: str,
+    model_dir: str,
+) -> Tuple[List[Dict], float]:
+    """
+    单次截图内：模板匹配 -> 去重 TopK -> CNN 验证，返回所有通过验证的候选。
+    返回: (details_list, template_max_val)
+    details_list 每项: {'icon_name', 'match_val', 'prob', 'position': (x,y) 屏幕坐标}
+    """
+    template_path = os.path.join(icon_dir, f"{icon}.png")
+    template = cv2.imread(template_path, cv2.IMREAD_COLOR)
+    if template is None:
+        raise FileNotFoundError(f"模板图像无法加载: {template_path}")
+
+    template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+    h, w = template_gray.shape[:2]
+    screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+    res = cv2.matchTemplate(screen_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+
+    max_val = float(np.max(res)) if res.size else 0.0
+    ys, xs = np.where(res >= cfg.template_threshold)
+    if len(xs) == 0:
+        return [], max_val
+
+    cands = [(int(x), int(y), float(res[y, x])) for x, y in zip(xs, ys)]
+    cands.sort(key=lambda t: t[2], reverse=True)
+
+    min_dist = max(1, int(min(w, h) * float(cfg.dedup_ratio)))
+    min_dist2 = min_dist * min_dist
+    filtered = []
+    for x, y, s in cands:
+        keep = True
+        for fx, fy, _ in filtered:
+            if (x - fx) ** 2 + (y - fy) ** 2 <= min_dist2:
+                keep = False
+                break
+        if keep:
+            filtered.append((x, y, s))
+        if len(filtered) >= int(cfg.topk):
+            break
+
+    model = _get_cnn_model(icon, model_dir=model_dir)
+    r = adjust_region(region) if do_adjust else region
+    details_list: List[Dict] = []
+
+    for idx, (x0, y0, match_val) in enumerate(filtered):
+        crop = screen[y0 : y0 + h, x0 : x0 + w]
+        if crop.size == 0 or crop.shape[0] != h or crop.shape[1] != w:
+            continue
+        if cfg.debug_save:
+            try:
+                debug_path = os.path.join(DEBUG_DIR, f"{icon}_match_{idx}_s{match_val:.3f}.png")
+                cv2.imwrite(debug_path, crop)
+            except Exception:
+                pass
+        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        pil = Image.fromarray(rgb)
+        x_t = _TRANSFORM(pil).unsqueeze(0).to(_DEVICE)
+        with torch.no_grad():
+            out = model(x_t)
+            prob = torch.softmax(out, dim=1)[0, 1].item()
+        if prob >= cfg.cnn_threshold:
+            px = x0 + r[0] + w // 2
+            py = y0 + r[1] + h // 2
+            details_list.append({
+                "icon_name": icon,
+                "match_val": match_val,
+                "prob": prob,
+                "position": (px, py),
+            })
+
+    return details_list, max_val
+
+
 def find_icon_cnn(
         icon: str,
         region=None,
@@ -481,89 +567,81 @@ def find_icon_cnn(
     else:
         do_adjust = True
 
-    # 读取模板
-    template_path = os.path.join(icon_dir, f"{icon}.png")
-    template = cv2.imread(template_path, cv2.IMREAD_COLOR)
-    if template is None:
-        raise FileNotFoundError(f"模板图像无法加载: {template_path}")
-
-    template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-    h, w = template_gray.shape[:2]
-
-    # 截图
     screen = capture_screen_area(region, do_adjust=do_adjust)
-    screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+    details_list, max_val = _find_icon_candidates_one_shot(
+        icon, region, screen, cfg, do_adjust, icon_dir, model_dir
+    )
 
-    # 模板匹配
-    res = cv2.matchTemplate(screen_gray, template_gray, cv2.TM_CCOEFF_NORMED)
-
-    # 记录 max_val：定位到底是模板阈值卡住还是CNN阈值卡住
-    max_val = float(np.max(res)) if res.size else 0.0
-    log_message("INFO", f"[{icon}] template max_val={max_val:.4f}, thr={cfg.template_threshold:.4f}")
-
-    ys, xs = np.where(res >= cfg.template_threshold)
-    if len(xs) == 0:
+    if len(details_list) == 0:
+        log_message("INFO", f"[{icon}] template max_val={max_val:.4f}, thr={cfg.template_threshold:.4f}")
         return False
 
-    # 收集候选点 + 分数，并按分数降序排序（防漏检关键）
-    cands = [(int(x), int(y), float(res[y, x])) for x, y in zip(xs, ys)]
-    cands.sort(key=lambda t: t[2], reverse=True)
+    d0 = details_list[0]
+    log_message("INFO", f"[{icon}] cand#0 score={d0['match_val']:.4f} prob={d0['prob']:.4f} thr={cfg.cnn_threshold:.4f}")
+    mx = d0["position"][0] + offset_x
+    my = d0["position"][1] + offset_y
+    if move:
+        pyautogui.moveTo(mx, my)
+    return True
 
-    # 半径去重：避免同一图标附近重复候选
-    min_dist = max(1, int(min(w, h) * float(cfg.dedup_ratio)))
-    min_dist2 = min_dist * min_dist
 
-    filtered = []
-    for x, y, s in cands:
-        keep = True
-        for fx, fy, fs in filtered:
-            if (x - fx) * (x - fx) + (y - fy) * (y - fy) <= min_dist2:
-                keep = False
-                break
-        if keep:
-            filtered.append((x, y, s))
-        if len(filtered) >= int(cfg.topk):
-            break
+def find_icon_count_cnn(
+    icon_name: str,
+    max_attempts: int = 1,
+    region=None,
+    screen=None,
+    cfg: Optional[CnnConfig] = None,
+    threshold: Optional[float] = None,
+    cnn_threshold: Optional[float] = None,
+    icon_dir: str = ICON_DIR,
+    model_dir: str = MODEL_DIR,
+) -> Tuple[int, List[Dict]]:
+    """
+    统计检测到的图标数量（同一类型多个实例）：模板匹配 + CNN 验证，与 find_icon_cnn 共用同一套逻辑。
+    返回: (count, details_list)
+    details 每项: {'icon_name', 'match_val', 'prob', 'position': (x,y) 屏幕坐标}
+    """
+    if cfg is None:
+        cfg = CnnConfig()
+    if threshold is not None:
+        cfg.template_threshold = threshold
+    if cnn_threshold is not None:
+        cfg.cnn_threshold = cnn_threshold
 
-    # 加载CNN模型（缓存）
-    model = _get_cnn_model(icon, model_dir=model_dir)
+    if region is None:
+        fx, fy = pyautogui.size()
+        region = (0, 0, fx, fy)
+        do_adjust = False
+    else:
+        do_adjust = True
 
-    # 遍历候选做CNN验证
-    for idx, (x0, y0, score) in enumerate(filtered):
-        crop = screen[y0:y0 + h, x0:x0 + w]
-        if crop.size == 0:
-            continue
+    for attempt in range(max_attempts):
+        if screen is None:
+            screen = capture_screen_area(region, do_adjust=do_adjust)
+        details_list, max_val = _find_icon_candidates_one_shot(
+            icon_name, region, screen, cfg, do_adjust, icon_dir, model_dir
+        )
+        if len(details_list) > 0:
+            parts = [f"#{i+1} match={d['match_val']:.3f} prob={d['prob']:.3f}" for i, d in enumerate(details_list)]
+            log_message("INFO", f"[{icon_name}] 检测到 {len(details_list)} 个 thr={cfg.cnn_threshold:.2f} | " + " | ".join(parts))
+            return len(details_list), details_list
+        screen = None  # 下一轮重新截屏
+    return 0, []
 
-        # debug 保存候选 crop（可选）
-        if cfg.debug_save:
-            try:
-                debug_path = os.path.join(DEBUG_DIR, f"{icon}_match_{idx}_s{score:.3f}.png")
-                cv2.imwrite(debug_path, crop)
-            except Exception:
-                pass
 
-        # BGR -> RGB -> PIL -> Tensor
-        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-        pil = Image.fromarray(rgb)
-        x = _TRANSFORM(pil).unsqueeze(0).to(_DEVICE)
+def find_icon_detailed_cnn(
+    icon_name: str,
+    max_attempts: int = 1,
+    region=None,
+    screen=None,
+    cfg: Optional[CnnConfig] = None,
+) -> Tuple[bool, Dict]:
+    """兼容旧逻辑：返回 (found, first_detail)，detail 含 icon_name/match_val/prob/position 或 found=False"""
+    cnt, details = find_icon_count_cnn(icon_name, max_attempts=max_attempts, region=region, screen=screen, cfg=cfg)
+    if cnt > 0:
+        return True, details[0]
+    return False, {"icon_name": icon_name, "match_val": 0, "prob": 0.0, "position": None, "found": False}
 
-        with torch.no_grad():
-            out = model(x)
-            prob = torch.softmax(out, dim=1)[0, 1].item()  # pos 概率
-
-        log_message("INFO", f"[{icon}] cand#{idx} pt=({x0},{y0}) score={score:.4f} prob={prob:.4f} thr={cfg.cnn_threshold:.4f}")
-
-        if prob >= cfg.cnn_threshold:
-            r = adjust_region(region) if do_adjust else region
-            mx = x0 + r[0] + w // 2 + offset_x
-            my = y0 + r[1] + h // 2 + offset_y
-
-            if move:
-                pyautogui.moveTo(mx, my)
-
-            return True
-
-    return False
 
 def safe_find_icon(
         icon: str,
@@ -714,7 +792,7 @@ def rolljump2(max_attempts=0):
                 time.sleep(1)
                 # 再点击jump2
                 log_message("INFO", "查找并点击jump2")
-                if safe_find_icon("jump2", region_full_right, max_attempts=3,threshold=0.9,cnn_threshold=0.7):
+                if safe_find_icon("jump2", region_full_right, max_attempts=3,threshold=0.9,cnn_threshold=0.85):
                     log_message("INFO", "找到并点击jump2，等待10秒")
                     time.sleep(10)
             else:
