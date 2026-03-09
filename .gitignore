@@ -1,5 +1,6 @@
 *.log
 *.pyc
+*.docx
 .DS_Store
 license*
 __pycache__/

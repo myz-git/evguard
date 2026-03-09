@@ -2,16 +2,29 @@
 
 
 
-## 1. 初始化仓库
+## 1. 软件功能
 
-### 1.1 准备：GitHub 上建一个空仓库
+### 1.1 FSD
+
+实现端到端自动导航,详细见<FSD说明.pdf>
+
+### 1.2  Guard
+
+实现被动预警,详细参见<GuardA.pdf>
+实现主动防御,详细参见<GuardB.pdf>
+
+
+
+## 2. 初始化仓库
+
+### 2.1 准备：GitHub 上建一个空仓库
 
 在 GitHub 创建仓库 `evguard`，**不要勾选** README/.gitignore/license（保持空仓库）。
  拿到地址：`https://github.com/myz-git/evguard.git`
 
 ------
 
-### 1.2 进入项目目录
+### 2.2 进入项目目录
 
 ```
 cd /d D:\Workspace\git\evguard
@@ -19,7 +32,7 @@ cd /d D:\Workspace\git\evguard
 
 ------
 
-### 1.3 彻底重来：删掉旧 .git (可选但推荐）
+### 2.3 彻底重来：删掉旧 .git (可选但推荐）
 
 如果你确定要重新来（你之前就是这个诉求）：
 
@@ -29,7 +42,7 @@ rmdir /s /q .git
 
 ------
 
-### 1.4 初始化仓库 + 固化 CRLF 规则 + 忽略构建产物
+### 2.4 初始化仓库 + 固化 CRLF 规则 + 忽略构建产物
 
 ####  init + main
 
@@ -75,7 +88,7 @@ keys/
 
 ------
 
-### 1.5 第一次提交
+### 2.5 第一次提交
 
 #### 先提交规则文件
 
@@ -102,7 +115,7 @@ git commit -m "chore: normalize line endings"
 
 ------
 
-### 1.6 绑定 GitHub 远端并 push
+### 2.6 绑定 GitHub 远端并 push
 
 ```
 git remote add origin https://github.com/myz-git/evguard.git
@@ -118,7 +131,7 @@ git status
 git remote -v
 ```
 
-## 2. 建立虚拟环境
+## 3. 建立虚拟环境
 
 ```
 cd /d D:\Workspace\git\evguard
@@ -162,11 +175,9 @@ from PyInstaller.utils.hooks import collect_data_files
 datas = collect_data_files("cnocr")
 ```
 
+## 4. 打包
 
-
-### 3. 打包: 
-
-### 本地打包
+### 4.1 本地打包
 
 ```
 #清理
@@ -181,7 +192,7 @@ pyinstaller --clean  -y ev_all.spec
 
 
 
-### 更新git 版本
+### 4.2 更新git 版本
 
 完成代码改动-> 更新Readme.md-> commit -> tag->push
 
@@ -218,3 +229,36 @@ git tag -d v1.2.0
 git push origin :refs/tags/v1.2.0
 ```
 
+
+
+
+
+## UI设计
+
+按当前界面，先定义一版固定“区域编号”供后续沟通：
+
+1. A 整体窗口（EvGuard 主窗体）
+2. B 顶部横幅区（黑底 EVE 图）
+3. C 顶部信息栏（“EvGuard 控制台”+ RUN/STOP/SYNC + 右侧按钮）
+4. C1 标题文字（EvGuard 控制台）
+5. C2 统计芯片区（RUN / STOP / SYNC）
+6. C3 REFRESH 按钮
+7. C4 EMERGENCY EXIT 按钮
+8. D 主内容区（中间左右分栏总区域）
+9. D1 左侧功能卡列（四个功能卡整体）
+
+1. D1-1 FSD0 卡
+2. D1-2 FSD10 卡
+3. D1-3 GUARDA 卡
+4. D1-4 GUARDB 卡
+5. D2 右侧日志面板（整体）
+6. D2-1 日志工具条（“日志/过滤/清空/自动滚动”）
+7. D2-2 日志文本显示区（深蓝大框）
+8. D2-3 日志滚动条
+9. E 底部状态条（“就绪 | 系统稳定”）
+
+后续你可以直接这样下指令：
+
+- 改 C2：隐藏 STOP 芯片
+- 改 D1-2：按钮改窄一点
+- 改 D2-1：把“清空”放到最右侧
