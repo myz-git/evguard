@@ -12,6 +12,7 @@ import re
 import json
 import time
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Optional, Tuple, Dict, List
 
@@ -54,6 +55,64 @@ MODEL_DIR = resource_path("model_cnn")
 
 DEBUG_DIR = "debug_screenshots"
 os.makedirs(DEBUG_DIR, exist_ok=True)
+
+_SHARED_UI_LOG_FILE = os.environ.get("EVGUARD_UI_LOG_FILE", "").strip()
+_SHARED_UI_LOG_PREFIX = os.environ.get("EVGUARD_UI_LOG_PREFIX", "").strip()
+_SHARED_UI_LOG_LOCK = threading.RLock()
+
+
+def _append_shared_ui_log_line(line: str):
+    if not _SHARED_UI_LOG_FILE:
+        return
+    text = line.rstrip("\r")
+    if not text:
+        return
+    with _SHARED_UI_LOG_LOCK:
+        with open(_SHARED_UI_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{_SHARED_UI_LOG_PREFIX}{text}\n")
+
+
+class _SharedUILogStream:
+    def __init__(self, wrapped_stream):
+        self.wrapped_stream = wrapped_stream
+        self._buffer = ""
+        self.encoding = getattr(wrapped_stream, "encoding", "utf-8")
+
+    def write(self, data):
+        if self.wrapped_stream:
+            self.wrapped_stream.write(data)
+        text = str(data)
+        if not text:
+            return 0
+        self._buffer += text
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            _append_shared_ui_log_line(line)
+        return len(text)
+
+    def flush(self):
+        if self.wrapped_stream:
+            self.wrapped_stream.flush()
+        if self._buffer:
+            _append_shared_ui_log_line(self._buffer)
+            self._buffer = ""
+
+    def isatty(self):
+        if self.wrapped_stream:
+            return self.wrapped_stream.isatty()
+        return False
+
+
+def _install_shared_ui_log_streams():
+    if not _SHARED_UI_LOG_FILE:
+        return
+    if not isinstance(sys.stdout, _SharedUILogStream):
+        sys.stdout = _SharedUILogStream(sys.stdout)
+    if not isinstance(sys.stderr, _SharedUILogStream):
+        sys.stderr = _SharedUILogStream(sys.stderr)
+
+
+_install_shared_ui_log_streams()
 
 class NoCnocrFilter(logging.Filter):
     """禁用 cnocr/cnstd 的 use model 噪音日志"""
@@ -111,7 +170,7 @@ def print_startup(app_name: str, hints=None):
     width = 44
     line = "=" * width
     pad = "  "
-    parts = ["", line, pad + f"{app_name} 已启动，正在运行"]
+    parts = ["", line, pad + f"{app_name} 已启动，开始加载..."]
     if hints:
         for h in hints:
             parts.append(pad + h)
@@ -141,7 +200,15 @@ def log_message(level: str, message: str, screenshot: bool = False, script_name:
     else:
         logging.error(message)
 
-    # flush
+    # 当作为子进程由 start.exe 启动时，通过环境变量显式要求把日志同步到 stdout，
+    # 这样 start.exe 的 stdout 读取线程可以在控制台界面显示这些内容。
+    try:
+        if os.environ.get("EVGUARD_CHILD_LOG_TO_STDOUT") == "1":
+            print(message, flush=True)
+    except Exception:
+        pass
+
+    # flush 所有 handler，确保 task.log 等文件即时落盘
     for h in logging.getLogger().handlers:
         try:
             h.flush()
@@ -623,7 +690,12 @@ def find_icon_count_cnn(
         )
         if len(details_list) > 0:
             parts = [f"#{i+1} match={d['match_val']:.3f} prob={d['prob']:.3f}" for i, d in enumerate(details_list)]
-            log_message("INFO", f"[{icon_name}] 检测到 {len(details_list)} 个 thr={cfg.cnn_threshold:.2f} | " + " | ".join(parts))
+            log_message(
+                "INFO",
+                f"[{icon_name}] 检测到 {len(details_list)} 个 "
+                f"template_thr={cfg.template_threshold:.2f} "
+                f"cnn_thr={cfg.cnn_threshold:.2f} | " + " | ".join(parts),
+            )
             return len(details_list), details_list
         screen = None  # 下一轮重新截屏
     return 0, []

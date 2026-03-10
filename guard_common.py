@@ -10,6 +10,7 @@ from PIL import Image
 from datetime import datetime
 
 from pynput import keyboard
+from license_utils import ensure_license_or_exit
 
 
 
@@ -30,33 +31,12 @@ from utils import (
     find_icon_detailed_cnn,
 )
 
-########################################################
-# license 授权验证
-from license_verify import check_license_or_trial, get_request_code
-
-st = check_license_or_trial()
-if not st.ok:
-    print(st.message)
-    print("RequestCode:", get_request_code())
-    raise SystemExit(2)
-
-if st.ok and st.mode == "licensed":
-    exp_str = st.exp.date().isoformat() if st.exp else "未知"
-    print(f"license已授权,到期时间 {exp_str}")
-elif st.ok and st.mode == "trial":
-    print(f"未授权,30天试用")
-    exp_str = st.exp.date().isoformat() if st.exp else "未知"
-    if st.days_left <= 5:
-        print(f"试用模式,到期时间 {exp_str}（剩余 {st.days_left} 天）")
-else:
-    # 失败逻辑
-    print(st.message)
-########################################################
+ensure_license_or_exit()
 
 # 预警模式: A=低安(只报警不规避), B=高安(触发后规避)
 MODE_A_LOWSEC = 'A'
 MODE_B_HIGHSEC = 'B'
-# 目标扫描间隔（秒），B 补足到此间隔，A 通过隔轮做 OCR 尽量接近
+# 正常扫描间隔（秒）
 TARGET_INTERVAL_SEC = 5.0
 
 
@@ -93,6 +73,110 @@ DEBUG_MODE = False
 DEBUG_SAVE_DIR = "debug_icons"
 # 警告阈值：匹配值超过此值但未通过验证时显示警告（0.7表示70%相似度）
 WARNING_THRESHOLD = 0.75
+GENERAL_TEMPLATE_THRESHOLD = 0.86
+GENERAL_CNN_THRESHOLD = 0.95
+SUSPECT_TEMPLATE_THRESHOLD = 0.86
+SUSPECT_CNN_THRESHOLD = 0.95
+ICON_CONFIRM_DELAY_SEC = 0.5
+
+ICON_DETECTION_SPECS = [
+    {
+        "icon": "zhongli",
+        "label": "中立",
+        "modes": {MODE_A_LOWSEC},
+        "threshold": GENERAL_TEMPLATE_THRESHOLD,
+        "cnn_threshold": GENERAL_CNN_THRESHOLD,
+    },
+    {
+        "icon": "zuifan",
+        "label": "罪犯",
+        "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC},
+        "threshold": SUSPECT_TEMPLATE_THRESHOLD,
+        "cnn_threshold": SUSPECT_CNN_THRESHOLD,
+    },
+    {
+        "icon": "jisha",
+        "label": "击杀",
+        "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC},
+        "threshold": GENERAL_TEMPLATE_THRESHOLD,
+        "cnn_threshold": GENERAL_CNN_THRESHOLD,
+    },
+    {
+        "icon": "xianfan",
+        "label": "嫌犯",
+        "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC},
+        "threshold": SUSPECT_TEMPLATE_THRESHOLD,
+        "cnn_threshold": SUSPECT_CNN_THRESHOLD,
+    },
+    {
+        "icon": "didui",
+        "label": "敌对",
+        "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC},
+        "threshold": 0.9,
+        "cnn_threshold": 0.95,
+    },
+    {
+        "icon": "buliang",
+        "label": "不良",
+        "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC},
+        "threshold": GENERAL_TEMPLATE_THRESHOLD,
+        "cnn_threshold": GENERAL_CNN_THRESHOLD,
+    },
+]
+
+
+def _detect_icons_once(mode, region, screen, cfg):
+    hits = []
+    for spec in ICON_DETECTION_SPECS:
+        if mode not in spec["modes"]:
+            continue
+        icon_cfg = CnnConfig(
+            template_threshold=cfg.template_threshold,
+            cnn_threshold=cfg.cnn_threshold,
+            topk=cfg.topk,
+            dedup_ratio=cfg.dedup_ratio,
+            debug_save=cfg.debug_save,
+        )
+        count, details_list = find_icon_count_cnn(
+            spec["icon"],
+            max_attempts=1,
+            region=region,
+            screen=screen,
+            cfg=icon_cfg,
+            threshold=spec.get("threshold"),
+            cnn_threshold=spec.get("cnn_threshold"),
+        )
+        if count > 0:
+            hits.append({"spec": spec, "count": count, "details": details_list})
+    return hits
+
+
+def _confirm_icon_hits(mode, region, cfg, first_hits):
+    if not first_hits:
+        return []
+
+    for hit in first_hits:
+        best_match = max((detail.get("match_val", 0.0) for detail in hit["details"]), default=0.0)
+        print(f"[检测] {hit['spec']['label']} 命中待确认 1/2 match={best_match:.3f}")
+
+    time.sleep(ICON_CONFIRM_DELAY_SEC)
+    confirm_screen = capture_screen_area(region)
+    confirmed_hits = []
+    first_icons = {hit["spec"]["icon"] for hit in first_hits}
+    confirm_hits = _detect_icons_once(mode, region, confirm_screen, cfg)
+    confirm_map = {hit["spec"]["icon"]: hit for hit in confirm_hits if hit["spec"]["icon"] in first_icons}
+
+    for hit in first_hits:
+        icon_name = hit["spec"]["icon"]
+        confirmed = confirm_map.get(icon_name)
+        if not confirmed:
+            print(f"[检测] {hit['spec']['label']} 0.5秒复检未通过")
+            continue
+        best_match = max((detail.get("match_val", 0.0) for detail in confirmed["details"]), default=0.0)
+        print(f"[检测] {hit['spec']['label']} 0.5秒复检通过 match={best_match:.3f}")
+        confirmed_hits.append(confirmed)
+
+    return confirmed_hits
 
 def on_press(key):
     global running, ctrl_pressed
@@ -182,14 +266,19 @@ def main(mode=MODE_A_LOWSEC):
         mode_desc = "高安主动预警(雷达主动检测,可自动规避)"
 
     print_startup(app_name, ["按 Ctrl+F12 可停止程序", f"模式: {mode_desc}"])
-    play_sound_wav("static/Login_Connecting.wav")
-
+    
+    
 
     # 开始监听键盘事件
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()
 
+    played_start_sound = False
     while running:
+        if not played_start_sound:
+            print("游戏检测中...请稍后...")
+            play_sound_wav("static/Login_Connecting.wav")
+            played_start_sound = True
         loop_start = time.time()
         # CNN 模式：无需加载 joblib/scaler，直接使用 icon/ + model_cnn/
 
@@ -200,14 +289,20 @@ def main(mode=MODE_A_LOWSEC):
         center_panel2 = screen_regions['center_panel2']
         right_panel = screen_regions['right_panel']
 
+
         try:
             # A 模式：不做任何键鼠操作；B 模式可触发雷达扫描（鼠标中键）
+            play_sound_wav("static/faction.wav")
             if mode == MODE_B_HIGHSEC:
                 # 使用鼠标中键触发雷达扫描：按住0.1秒再松开
                 pyautogui.mouseDown(button='middle')
                 print("雷达扫描中...")
+                
                 time.sleep(0.1)
                 pyautogui.mouseUp(button='middle')
+            else:
+                print("扫描中...")
+
 
             total_icon_count = 0
             icon_details_summary = []
@@ -217,68 +312,18 @@ def main(mode=MODE_A_LOWSEC):
 
             # 默认阈值统一在 utils.CnnConfig 中配置，此处用默认即可；特殊图标（如敌对）在调用时传 cnn_threshold 等覆盖
             cfg_icon = CnnConfig()
-
-
-            # A模式：检测「中立声望」
-            if mode == MODE_A_LOWSEC:
-                zhongli_count, zhongli_details_list = find_icon_count_cnn("zhongli", max_attempts=1, region=right_panel, screen=screen, cfg=cfg_icon)
-                if zhongli_count > 0:
-                    total_icon_count += zhongli_count
-                    for detail in zhongli_details_list:
-                        icon_details_summary.append(("中立", detail))
-                        # print(f"[检测] 中立声望 - 匹配值: {detail['match_val']:.3f}, "
-                        #       f"模型预测: {detail.get('prob', 0)}, "
-                        #       f"位置: {detail['position']}")
-
-            # 检测「罪犯声望」
-            zuifan_count, zuifan_details_list = find_icon_count_cnn("zuifan", max_attempts=1, region=right_panel, screen=screen, cfg=cfg_icon)
-            if zuifan_count > 0:
-                total_icon_count += zuifan_count
-                for detail in zuifan_details_list:
-                    icon_details_summary.append(("罪犯", detail))
-                    # print(f"[检测] 罪犯声望 - 匹配值: {detail['match_val']:.3f}, "
-                    #       f"模型预测: {detail.get('prob', 0)}, "
-                    #       f"位置: {detail['position']}")
-
-            # 检测「击杀权限」
-            jisha_count, jisha_details_list = find_icon_count_cnn("jisha", max_attempts=1, region=right_panel, screen=screen, cfg=cfg_icon)
-            if jisha_count > 0:
-                total_icon_count += jisha_count
-                for detail in jisha_details_list:
-                    icon_details_summary.append(("击杀", detail))
-                    # print(f"[检测] 击杀权限 - 匹配值: {detail['match_val']:.3f}, "
-                    #       f"模型预测: {detail.get('prob', 0)}, "
-                    #       f"位置: {detail['position']}")
-
-            # 检测「嫌犯声望」
-            xianfan_count, xianfan_details_list = find_icon_count_cnn("xianfan", max_attempts=1, region=right_panel, screen=screen, cfg=cfg_icon)
-            if xianfan_count > 0:
-                total_icon_count += xianfan_count
-                for detail in xianfan_details_list:
-                    icon_details_summary.append(("嫌犯", detail))
-                    # print(f"[检测] 嫌犯声望 - 匹配值: {detail['match_val']:.3f}, "
-                    #       f"模型预测: {detail.get('prob', 0)}, "
-                    #       f"位置: {detail['position']}")
-
-
-            # 检测「敌对」
-            # 敌对图标易误检，单独提高 CNN 阈值减少误报
-            didui_count, didui_details_list = find_icon_count_cnn("didui", max_attempts=1, region=right_panel, screen=screen, cfg=cfg_icon, threshold=0.9,cnn_threshold=0.95)
-            # didui_count, didui_details_list = find_icon_count_cnn("didui", max_attempts=1, region=right_panel, screen=screen, cfg=cfg_icon)
-            if didui_count > 0:
-                total_icon_count += didui_count
-                for detail in didui_details_list:
-                    icon_details_summary.append(("敌对", detail))
-                    print(f"[检测] 敌对声望 - 匹配值: {detail['match_val']:.3f}, "
-                          f"模型预测: {detail.get('prob', 0)}, "
-                          f"位置: {detail['position']}")
-
-            # 检测「不良」
-            buliang_count, buliang_details_list = find_icon_count_cnn("buliang", max_attempts=1, region=right_panel, screen=screen, cfg=cfg_icon)
-            if buliang_count > 0:
-                total_icon_count += buliang_count
-                for detail in buliang_details_list:
-                    icon_details_summary.append(("不良", detail))
+            first_icon_hits = _detect_icons_once(mode, right_panel, screen, cfg_icon)
+            confirmed_icon_hits = _confirm_icon_hits(mode, right_panel, cfg_icon, first_icon_hits)
+            for hit in confirmed_icon_hits:
+                total_icon_count += hit["count"]
+                for detail in hit["details"]:
+                    icon_details_summary.append((hit["spec"]["label"], detail))
+                    if hit["spec"]["icon"] == "didui":
+                        print(
+                            f"[检测] 敌对声望 - 匹配值: {detail['match_val']:.3f}, "
+                            f"模型预测: {detail.get('prob', 0)}, "
+                            f"位置: {detail['position']}"
+                        )
 
             icon_found = total_icon_count > 0
 
@@ -357,6 +402,7 @@ def emergency_evade_pin999(
       - time, sys
     """
     speak("紧急规避,发现可疑舰船")
+    print("紧急规避,发现可疑舰船")
 
     # 1) 打开地点面板
     pyautogui.press(open_key)
@@ -389,11 +435,13 @@ def emergency_evade_pin999(
         return False
 
     if _find_and_click_first(action_text):
+        print("紧急规避已启动,程序终止")
         speak("紧急规避已启动,程序终止")
         sys.exit(1)
 
     if _find_and_click_first(fallback_action_text):
         speak("紧急规避已启动,程序终止")
+        print("紧急规避已启动,程序终止")
         sys.exit(1)
 
     # 都失败：回退

@@ -11,6 +11,7 @@ datas = [
     (os.path.join(project_dir, "icon"), "icon"),
     (os.path.join(project_dir, "static"), "static"),
     (os.path.join(project_dir, "model_cnn"), "model_cnn"),
+    (os.path.join(project_dir, "cfg.txt"), "."),
 ]
 
 # 只补 rapidocr 真实缺失的 yaml（避免全量带 rapidocr 数据）
@@ -200,15 +201,54 @@ exe_gb = EXE(
     contents_directory="_internal",
 )
 
-# ========= COLLECT: 4 EXEs + shared deps/resources =========
+# ========= START GUI =========
+a_start = Analysis(
+    [os.path.join(project_dir, "start.py")],
+    pathex=[project_dir],
+    binaries=[],
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=excludes,
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+pyz_start = PYZ(a_start.pure, a_start.zipped_data, cipher=block_cipher)
+
+exe_start = EXE(
+    pyz_start,
+    a_start.scripts,
+    [], [], [], [],
+    name="Start",
+    icon=os.path.join(project_dir, "icon", "eva.ico"),
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    exclude_binaries=True,
+    contents_directory="_internal",
+)
+
+# ========= COLLECT: 5 EXEs + shared deps/resources =========
 coll = COLLECT(
     exe_fsd0,
     exe_fsd10,
     exe_ga,
     exe_gb,
-    a_fsd0.binaries + a_fsd10.binaries + a_ga.binaries + a_gb.binaries,
-    a_fsd0.zipfiles + a_fsd10.zipfiles + a_ga.zipfiles + a_gb.zipfiles,
-    a_fsd0.datas + a_fsd10.datas + a_ga.datas + a_gb.datas,
+    exe_start,
+    a_fsd0.binaries + a_fsd10.binaries + a_ga.binaries + a_gb.binaries + a_start.binaries,
+    a_fsd0.zipfiles + a_fsd10.zipfiles + a_ga.zipfiles + a_gb.zipfiles + a_start.zipfiles,
+    a_fsd0.datas + a_fsd10.datas + a_ga.datas + a_gb.datas + a_start.datas,
     strip=False,
     upx=False,
     name="FsdGuard",   # dist/FsdGuard/

@@ -1,9 +1,10 @@
-﻿import json
+import json
 import os
 import re
 import subprocess
 import threading
 import time
+import sys
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -11,8 +12,47 @@ from license_utils import get_license_info_text, get_machine_code
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_FILE = os.path.join(BASE_DIR, "evguard_log.txt")
-COMMANDS_FILE = os.path.join(BASE_DIR, "commands.json")
+
+# exe 所在目录（打包后）或 dist/FsdGuard 目录（源码运行）
+if getattr(sys, "frozen", False):
+    EXEC_BASE_DIR = os.path.dirname(sys.executable)
+    CONFIG_BASE_DIR = EXEC_BASE_DIR
+else:
+    EXEC_BASE_DIR = os.path.join(BASE_DIR, "dist", "FsdGuard")
+    CONFIG_BASE_DIR = BASE_DIR
+
+
+def resource_path(rel_path: str) -> str:
+    """
+    运行在 PyInstaller 打包后的 exe 或源码环境下时，返回静态资源的绝对路径。
+    - 一体包(onefile)：使用 sys._MEIPASS
+    - 目录模式(onedir)：使用 exe 所在目录
+    - 源码运行：使用当前文件所在目录
+    """
+    if getattr(sys, "_MEIPASS", None):
+        base = sys._MEIPASS
+    elif getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = BASE_DIR
+    return os.path.join(base, rel_path)
+
+
+def play_sound_wav(file_path: str):
+    wav_path = resource_path(file_path)
+    if not os.path.isfile(wav_path):
+        return
+    try:
+        if sys.platform == "win32":
+            import winsound
+
+            winsound.PlaySound(wav_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+    except Exception:
+        pass
+
+# 日志 / 命令配置 / cfg 等运行时文件，放在 CONFIG_BASE_DIR
+LOG_FILE = os.path.join(CONFIG_BASE_DIR, "evguard_log.txt")
+COMMANDS_FILE = os.path.join(CONFIG_BASE_DIR, "commands.json")
 PROCESS_ORDER = ["Fsd0", "Fsd10", "GuardA", "GuardB"]
 DISPLAY_NAMES = {
     "Fsd0": "FSD0",
@@ -27,13 +67,16 @@ PROCESS_DESCRIPTIONS = {
     "GuardB": "高安主动防御",
 }
 DEFAULT_COMMANDS = {
-    "Fsd0": os.path.join(BASE_DIR, "dist", "FsdGuard", "FSD0.exe"),
-    "Fsd10": os.path.join(BASE_DIR, "dist", "FsdGuard", "FSD10.exe"),
-    "GuardA": os.path.join(BASE_DIR, "dist", "FsdGuard", "GuardA.exe"),
-    "GuardB": os.path.join(BASE_DIR, "dist", "FsdGuard", "GuardB.exe"),
+    "Fsd0": os.path.join(EXEC_BASE_DIR, "FSD0.exe"),
+    "Fsd10": os.path.join(EXEC_BASE_DIR, "FSD10.exe"),
+    "GuardA": os.path.join(EXEC_BASE_DIR, "GuardA.exe"),
+    "GuardB": os.path.join(EXEC_BASE_DIR, "GuardB.exe"),
 }
 ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-CFG_FILE = os.path.join(BASE_DIR, "cfg.txt")
+if getattr(sys, "frozen", False):
+    CFG_FILE = resource_path("cfg.txt")
+else:
+    CFG_FILE = os.path.join(BASE_DIR, "cfg.txt")
 
 
 COLORS = {
@@ -58,6 +101,11 @@ BUTTON_THEME = {
 
 
 def load_commands():
+    # 打包后的 start.exe：始终调用当前目录下的其它 exe，不读写 commands.json
+    if getattr(sys, "frozen", False):
+        return dict(DEFAULT_COMMANDS)
+
+    # 源码运行时才允许通过 commands.json 自定义路径
     commands = dict(DEFAULT_COMMANDS)
     if os.path.exists(COMMANDS_FILE):
         try:
@@ -155,11 +203,15 @@ class ProcessManager:
             return False, f"{DISPLAY_NAMES.get(name, name)} 可执行文件不存在: {command}"
 
         try:
+            # 传入环境变量，让子进程在 log_message 时同步一份到 stdout，便于这里抓取并显示到控制台界面
+            env = dict(os.environ)
+            env["EVGUARD_CHILD_LOG_TO_STDOUT"] = "1"
+            env["EVGUARD_UI_LOG_FILE"] = self.log_file
+            env["EVGUARD_UI_LOG_PREFIX"] = f"[{DISPLAY_NAMES.get(name, name)}] "
             proc = subprocess.Popen(
                 [command],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                env=env,
             )
         except Exception as e:
             self.log(f"启动 {DISPLAY_NAMES.get(name, name)} 失败: {e}")
@@ -168,9 +220,6 @@ class ProcessManager:
         with self.lock:
             self.processes[name] = proc
             self.statuses[name] = "Running"
-            t = threading.Thread(target=self._read_output_thread, args=(name, proc), daemon=True)
-            t.start()
-            self.output_threads[name] = t
 
         self.log(f"{DISPLAY_NAMES.get(name, name)} 启动中，PID: {proc.pid}")
         return True, f"{DISPLAY_NAMES.get(name, name)} 启动成功。"
@@ -440,7 +489,7 @@ class EvGuardApp:
 
     def _build_banner(self, parent):
         try:
-            banner_img = tk.PhotoImage(file="static/eve-ban.png")
+            banner_img = tk.PhotoImage(file=resource_path("static/eve-ban.png"))
             label = tk.Label(parent, image=banner_img, bg="black", borderwidth=0, highlightthickness=0)
             label.image = banner_img
             label.pack(side="left", padx=6)
@@ -638,6 +687,7 @@ class EvGuardApp:
         self._set_status_message(f"{DISPLAY_NAMES.get(name, name)} 启动中，正在加载模块…")
         ok, message = self.manager.start_process(name)
         if ok:
+            play_sound_wav("static/started.wav")
             self.starting_states[name] = {"started_at": time.time(), "seen_output": False}
         else:
             self.starting_states.pop(name, None)
@@ -655,6 +705,7 @@ class EvGuardApp:
         self._update_one_status(name)
         self._update_summary()
         if ok:
+            play_sound_wav("static/Notification_Ping.wav")
             self._set_status_message(message)
         else:
             self._set_status_message(message, "warn")

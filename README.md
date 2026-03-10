@@ -185,8 +185,6 @@ cd /d D:\Workspace\git\evguard
 rmdir /s /q build
 rmdir /s /q dist
 del /q *.spec.bak 2>nul
-
-#打包
 pyinstaller --clean  -y ev_all.spec
 ```
 
@@ -211,13 +209,13 @@ git commit -m "提交说明"
 
 # 3. 创建新的 tag
 ## 打版本
-git tag v3.3
+git tag v3.4
 
 # 4. 推送代码及版本到远程仓库
 ## 推送代码
 git push
 ## 推送版本标签
-git push origin v3.3
+git push origin v3.4
 ```
 
 如需要删除tag
@@ -229,7 +227,11 @@ git tag -d v1.2.0
 git push origin :refs/tags/v1.2.0
 ```
 
+覆盖本地
 
+```
+git -C D:\Workspace\git\evguard checkout -- fsd0.py fsd10.py guard_common.py
+```
 
 
 
@@ -262,3 +264,12 @@ git push origin :refs/tags/v1.2.0
 - 改 C2：隐藏 STOP 芯片
 - 改 D1-2：按钮改窄一点
 - 改 D2-1：把“清空”放到最右侧
+
+### UI控制台输出
+
+self.manager.log(...)：会进 UI 控制台
+子进程 print(...)：会进 UI 控制台
+子进程 log_message(...)：会进 UI 控制台
+_set_status_message(...)：不会进 UI 控制台，只进底部状态栏
+messagebox.show...(...)：不会进 UI 控制台，只弹窗
+About 窗口内容：不会进 UI 控制台

@@ -2,31 +2,11 @@ import time
 from pynput import keyboard
 import sys
 import logging
+from license_utils import ensure_license_or_exit
 from utils import play_sound_wav, log_message, print_startup, safe_find_icon, hscrollscreen, rolljump, screen_regions, find_txt_ocr, speak, suppress_not_found_warnings_console
 
 
-########################################################
-# license 授权验证
-from license_verify import check_license_or_trial, get_request_code
-
-st = check_license_or_trial()
-if not st.ok:
-    print(st.message)
-    print("RequestCode:", get_request_code())
-    raise SystemExit(2)
-
-if st.ok and st.mode == "licensed":
-    exp_str = st.exp.date().isoformat() if st.exp else "未知"
-    print(f"license已授权,到期时间 {exp_str}")
-elif st.ok and st.mode == "trial":
-    print(f"未授权,30天试用")
-    exp_str = st.exp.date().isoformat() if st.exp else "未知"
-    if st.days_left <= 5:
-        print(f"试用模式,到期时间 {exp_str}（剩余 {st.days_left} 天）")
-else:
-    # 失败逻辑
-    print(st.message)
-########################################################
+ensure_license_or_exit()
 
 # fsd0 执行时不向控制台输出「未找到」类 WARNING（仍写 task.log）
 suppress_not_found_warnings_console()
@@ -67,12 +47,18 @@ def main():
     ctr = keyboard.Controller()
     state = "set_destination"
     find_gate_attempts = 0
-    max_find_gate_attempts = 10
+    max_find_gate_attempts = 5
 
-
+    # 只在循环第一次执行时播放一次启动音效
+    played_start_sound = False
     while running:
+        if not played_start_sound:
+            print("游戏检测中...请稍后...")
+            play_sound_wav("static/started.wav")
+            played_start_sound = True
         if state == "set_destination":
-            if safe_find_icon("zhongdian2", mid_left_panel, max_attempts=2):
+            print("finding remote destination")
+            if safe_find_icon("zhongdian2", mid_left_panel, max_attempts=1):
                 log_message("INFO", "终点设置成功，切换到check_local状态", screenshot=False)
                 logging.info("终点设置成功，切换到check_local状态")
                 state = "check_local"
@@ -80,9 +66,10 @@ def main():
                 # log_message("ERROR", "未找到终点", screenshot=False)
                 state = "find_gate"
                 # return 1
-
+        
         elif state == "check_local":
-            if safe_find_icon("tingkao1", mid_left_panel, max_attempts=2):
+            print("finding local destination")
+            if safe_find_icon("tingkao1", mid_left_panel, max_attempts=1):
                 log_message("INFO", "找到tingkao1，切换到check_dock状态", screenshot=False)
                 logging.info("找到tingkao1，切换到check_dock状态")
                 state = "check_dock"
@@ -92,6 +79,7 @@ def main():
                 state = "find_gate"
 
         elif state == "find_gate":
+            print("finding jump gate")
             gate_icons = [
                 ("jump8", 1),
                 ("jump7", 1),
@@ -107,6 +95,7 @@ def main():
             ):
                 log_message("INFO", "找到跳跃门，切换到warp状态", screenshot=False)
                 logging.info("找到跳跃门，切换到warp状态")
+                print("starting warp")
                 state = "warp"
                 find_gate_attempts = 0
             else:
@@ -132,6 +121,7 @@ def main():
                     state = "check_dock"
                 elif find_txt_ocr("跃迁至该处",max_attempts=1,region=mid_left_panel): 
                     logging.info("已到达目的地,程序停止")
+                    print("Arrived at destination")
                     return 0
                 else:
                     log_message("INFO", "rolljump继续尝试", screenshot=False)
@@ -142,8 +132,9 @@ def main():
                 safe_find_icon("jump3", region_full_right, max_attempts=1)
                 # speak("已切换到check_dock状态,等待完成停靠")
                 if find_txt_ocr("离站",max_attempts=1,region=region_full_right):
-                    log_message("INFO", "空间站已停靠，fsd0运行结束", screenshot=False)
-                    logging.info("空间站已停靠，fsd0运行结束")
+                    log_message("INFO", "空间站已停靠，运行结束", screenshot=False)
+                    logging.info("空间站已停靠，运行结束")
+                    print("已到达目的地，运行结束")
                     time.sleep(2)
                     return 0
 
