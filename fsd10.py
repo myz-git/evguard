@@ -3,7 +3,7 @@ from pynput import keyboard
 import sys
 import logging
 from license_utils import ensure_license_or_exit
-from utils import play_sound_wav, log_message, print_startup, safe_find_icon, hscrollscreen, rolljump2, screen_regions, find_txt_ocr, speak, suppress_not_found_warnings_console
+from utils import play_sound_wav, log_message, print_startup, safe_find_icon, hscrollscreen, rolljump2, screen_regions, find_txt_ocr, speak, suppress_not_found_warnings_console, is_game_exefile_running
 
 ensure_license_or_exit()
 
@@ -49,11 +49,14 @@ def main():
     find_gate_attempts = 0
     max_find_gate_attempts = 5
 
+    if not is_game_exefile_running():
+        print("游戏未启动, 请先启动游戏")
+        return 1
+    print("游戏检测中...请稍后...")
     # 只在循环第一次执行时播放一次启动音效
     played_start_sound = False
     while running:
         if not played_start_sound:
-            print("游戏检测中...请稍后...")
             play_sound_wav("static/started.wav")
             played_start_sound = True
         if state == "set_destination":

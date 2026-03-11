@@ -53,24 +53,27 @@ def play_sound_wav(file_path: str):
 # 日志 / 命令配置 / cfg 等运行时文件，放在 CONFIG_BASE_DIR
 LOG_FILE = os.path.join(CONFIG_BASE_DIR, "evguard_log.txt")
 COMMANDS_FILE = os.path.join(CONFIG_BASE_DIR, "commands.json")
-PROCESS_ORDER = ["Fsd0", "Fsd10", "GuardA", "GuardB"]
+PROCESS_ORDER = ["Fsd0", "Fsd10", "GuardA", "GuardB", "GuardC"]
 DISPLAY_NAMES = {
     "Fsd0": "FSD0",
     "Fsd10": "FSD10",
     "GuardA": "GUARDA",
     "GuardB": "GUARDB",
+    "GuardC": "GUARDC",
 }
 PROCESS_DESCRIPTIONS = {
     "Fsd0": "0M自动导航",
     "Fsd10": "微曲加速导航",
     "GuardA": "低安被动预警",
     "GuardB": "高安主动防御",
+    "GuardC": "低安主动防御",
 }
 DEFAULT_COMMANDS = {
     "Fsd0": os.path.join(EXEC_BASE_DIR, "FSD0.exe"),
     "Fsd10": os.path.join(EXEC_BASE_DIR, "FSD10.exe"),
     "GuardA": os.path.join(EXEC_BASE_DIR, "GuardA.exe"),
     "GuardB": os.path.join(EXEC_BASE_DIR, "GuardB.exe"),
+    "GuardC": os.path.join(EXEC_BASE_DIR, "GuardC.exe"),
 }
 ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 if getattr(sys, "frozen", False):
@@ -83,7 +86,9 @@ COLORS = {
     "bg": "#1b2026",
     "surface": "#242b33",
     "surface_alt": "#2f3842",
+    "surface_active": "#34404d",
     "line": "#4a5563",
+    "line_active": "#d1d5db",
     "text": "#e5e7eb",
     "muted": "#9ca3af",
     "brand": "#f59e0b",
@@ -187,6 +192,7 @@ class ProcessManager:
 
     def start_process(self, name):
         command = self.commands.get(name, "")
+        command_path = command.strip() if isinstance(command, str) else ""
         with self.lock:
             proc = self.processes.get(name)
             if proc and proc.poll() is None:
@@ -197,10 +203,14 @@ class ProcessManager:
                         f"当前仅允许同时运行一个功能。"
                         f"请先停止 {DISPLAY_NAMES.get(other_name, other_name)}。"
                     )
-        if not command:
+        if not command_path:
             return False, f"{DISPLAY_NAMES.get(name, name)} 未配置可执行文件路径。"
-        if not os.path.exists(command):
-            return False, f"{DISPLAY_NAMES.get(name, name)} 可执行文件不存在: {command}"
+        if not os.path.exists(command_path):
+            return False, f"{DISPLAY_NAMES.get(name, name)} 可执行文件不存在: {command_path}"
+
+        launch_command = [command_path]
+        if command_path.lower().endswith(".py"):
+            launch_command = [sys.executable, command_path]
 
         try:
             # 传入环境变量，让子进程在 log_message 时同步一份到 stdout，便于这里抓取并显示到控制台界面
@@ -209,7 +219,7 @@ class ProcessManager:
             env["EVGUARD_UI_LOG_FILE"] = self.log_file
             env["EVGUARD_UI_LOG_PREFIX"] = f"[{DISPLAY_NAMES.get(name, name)}] "
             proc = subprocess.Popen(
-                [command],
+                launch_command,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 env=env,
             )
@@ -221,7 +231,7 @@ class ProcessManager:
             self.processes[name] = proc
             self.statuses[name] = "Running"
 
-        self.log(f"{DISPLAY_NAMES.get(name, name)} 启动中，PID: {proc.pid}")
+        self.log(f"{DISPLAY_NAMES.get(name, name)} 启动中")
         return True, f"{DISPLAY_NAMES.get(name, name)} 启动成功。"
 
     def _read_output_thread(self, name, proc):
@@ -260,7 +270,7 @@ class ProcessManager:
             try:
                 proc.wait(timeout=4)
             except subprocess.TimeoutExpired:
-                self.log(f"{DISPLAY_NAMES.get(name, name)} 正常停止超时，尝试强制结束 (PID: {proc.pid})")
+                self.log(f"{DISPLAY_NAMES.get(name, name)} 正常停止超时，尝试强制结束")
                 if os.name == "nt":
                     subprocess.run(
                         ["taskkill", "/F", "/PID", str(proc.pid)],
@@ -279,7 +289,7 @@ class ProcessManager:
             self.statuses[name] = "Stopped"
             self.processes[name] = None
             self.output_threads.pop(name, None)
-        self.log(f"{DISPLAY_NAMES.get(name, name)} 已停止，PID: {proc.pid}")
+        self.log(f"{DISPLAY_NAMES.get(name, name)} 已停止")
         return True, f"{DISPLAY_NAMES.get(name, name)} 已停止。"
 
     def refresh_statuses(self):
@@ -513,26 +523,28 @@ class EvGuardApp:
             status_dot = tk.Canvas(head, width=10, height=10, bg=COLORS["surface"], highlightthickness=0)
             status_dot.pack(side="left", padx=(0, 6))
             status_dot.create_oval(1, 1, 9, 9, fill="#4b5563", outline="")
-            tk.Label(
+            title_label = tk.Label(
                 head,
                 text=DISPLAY_NAMES.get(name, name),
                 bg=COLORS["surface"],
                 fg=COLORS["text"],
                 font=("Segoe UI", 10, "bold"),
-            ).pack(side="left")
+            )
+            title_label.pack(side="left")
             status_pill = tk.Label(head, text="Stopped", bg="#fee2e2", fg=COLORS["danger"], padx=8, pady=2, font=("Segoe UI", 8, "bold"))
             status_pill.pack(side="right")
 
             info = tk.Frame(card, bg=COLORS["surface"])
             info.pack(fill="x", padx=10, pady=(0, 8))
-            tk.Label(
+            desc_label = tk.Label(
                 info,
                 text=PROCESS_DESCRIPTIONS.get(name, ""),
                 bg=COLORS["surface"],
                 fg="#c5cedb",
                 font=("Microsoft YaHei UI", 10),
                 anchor="w",
-            ).pack(side="left", fill="x", expand=True)
+            )
+            desc_label.pack(side="left", fill="x", expand=True)
 
             btns = tk.Frame(info, bg=COLORS["surface"])
             btns.pack(side="right")
@@ -544,8 +556,14 @@ class EvGuardApp:
             stop_btn.pack(side="left")
 
             self.process_ui[name] = {
+                "card": card,
+                "head": head,
+                "info": info,
                 "status_dot": status_dot,
                 "status_pill": status_pill,
+                "title_label": title_label,
+                "desc_label": desc_label,
+                "btns": btns,
                 "start_btn": start_btn,
                 "stop_btn": stop_btn,
             }
@@ -825,26 +843,46 @@ class EvGuardApp:
             return
 
         status = self.manager.get_status(name)
-        pid = self.manager.get_pid(name)
         start_meta = self.starting_states.get(name)
 
         if status == "Running":
+            self._apply_card_state(ui, active=True)
             if start_meta:
                 elapsed = int(time.time() - start_meta["started_at"])
                 ui["status_pill"].config(text=f"STARTING · {elapsed}s", bg="#13233f", fg="#93c5fd")
                 ui["status_dot"].itemconfig(1, fill="#3b82f6")
             else:
-                pid_suffix = f" · PID {pid}" if pid else ""
-                ui["status_pill"].config(text=f"RUNNING{pid_suffix}", bg="#082515", fg=COLORS["ok"])
+                ui["status_pill"].config(text="RUNNING", bg="#082515", fg=COLORS["ok"])
                 ui["status_dot"].itemconfig(1, fill=COLORS["ok"])
             ui["start_btn"].config(state="disabled")
             ui["stop_btn"].config(state="normal")
         else:
             self.starting_states.pop(name, None)
+            self._apply_card_state(ui, active=False)
             ui["status_pill"].config(text="STOPPED", bg="#2b1313", fg=COLORS["danger"])
             ui["status_dot"].itemconfig(1, fill=COLORS["danger"])
             ui["start_btn"].config(state="normal")
             ui["stop_btn"].config(state="disabled")
+
+    def _apply_card_state(self, ui, active):
+        if active:
+            card_bg = COLORS["surface_active"]
+            card_line = COLORS["line_active"]
+            text_fg = "#f8fafc"
+            desc_fg = "#dbe7f5"
+        else:
+            card_bg = COLORS["surface"]
+            card_line = COLORS["line"]
+            text_fg = COLORS["text"]
+            desc_fg = "#c5cedb"
+
+        ui["card"].config(bg=card_bg, highlightbackground=card_line)
+        ui["head"].config(bg=card_bg)
+        ui["info"].config(bg=card_bg)
+        ui["btns"].config(bg=card_bg)
+        ui["title_label"].config(bg=card_bg, fg=text_fg)
+        ui["desc_label"].config(bg=card_bg, fg=desc_fg)
+        ui["status_dot"].config(bg=card_bg)
 
     def _cleanup_starting_states(self):
         now = time.time()

@@ -12,6 +12,7 @@ import re
 import json
 import time
 import logging
+import subprocess
 import threading
 from dataclasses import dataclass
 from typing import Optional, Tuple, Dict, List
@@ -114,6 +115,43 @@ def _install_shared_ui_log_streams():
 
 _install_shared_ui_log_streams()
 
+
+def is_process_running(process_name: str) -> bool:
+    if not process_name:
+        return False
+
+    target = process_name.lower()
+    if os.name == "nt":
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"IMAGENAME eq {process_name}", "/NH"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            output = (result.stdout or "").lower()
+            return target in output
+        except Exception:
+            return False
+
+    try:
+        result = subprocess.run(
+            ["ps", "-A", "-o", "comm="],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+        )
+        return any(line.strip().lower().endswith(target) for line in result.stdout.splitlines())
+    except Exception:
+        return False
+
+
+def is_game_exefile_running() -> bool:
+    return is_process_running("exefile.exe")
+
 class NoCnocrFilter(logging.Filter):
     """禁用 cnocr/cnstd 的 use model 噪音日志"""
     def filter(self, record):
@@ -167,7 +205,7 @@ def print_startup(app_name: str, hints=None):
     :param app_name: 程序名称，如 "FSD0", "FSD10", "GuardA", "GuardB"
     :param hints: 可选，提示文案列表，如 ["按 Ctrl+F12 可停止程序"]
     """
-    width = 44
+    width = 38
     line = "=" * width
     pad = "  "
     parts = ["", line, pad + f"{app_name} 已启动，开始加载..."]
@@ -497,7 +535,7 @@ def _get_cnn_model(icon: str, model_dir=MODEL_DIR) -> nn.Module:
     model.load_state_dict(state)
     model.eval()
     _MODEL_CACHE[icon] = model
-    log_message("INFO", f"加载CNN模型: {model_path}")
+    log_message("INFO", f"加载CNN模型...")
     return model
 
 

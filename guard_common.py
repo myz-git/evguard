@@ -3,6 +3,7 @@ import argparse
 import numpy as np
 import pyautogui
 import time
+import random
 import cv2
 import os
 import pynput
@@ -29,15 +30,21 @@ from utils import (
     CnnConfig,
     find_icon_count_cnn,
     find_icon_detailed_cnn,
+    is_game_exefile_running,
 )
 
 ensure_license_or_exit()
 
-# 预警模式: A=低安(只报警不规避), B=高安(触发后规避)
+# 预警模式:
+# A=低安(只报警不规避)
+# B=高安(触发后规避)
+# C=低安主动防御(触发后规避)
 MODE_A_LOWSEC = 'A'
 MODE_B_HIGHSEC = 'B'
+MODE_C_LOWSEC_ACTIVE = 'C'
 # 正常扫描间隔（秒）
-TARGET_INTERVAL_SEC = 5.0
+TARGET_INTERVAL_MIN_SEC = 3.0
+TARGET_INTERVAL_MAX_SEC = 5.0
 
 
 class IconNotFoundException(Exception):
@@ -75,7 +82,7 @@ DEBUG_SAVE_DIR = "debug_icons"
 WARNING_THRESHOLD = 0.75
 GENERAL_TEMPLATE_THRESHOLD = 0.86
 GENERAL_CNN_THRESHOLD = 0.95
-SUSPECT_TEMPLATE_THRESHOLD = 0.86
+SUSPECT_TEMPLATE_THRESHOLD = 0.88
 SUSPECT_CNN_THRESHOLD = 0.95
 ICON_CONFIRM_DELAY_SEC = 0.5
 
@@ -83,42 +90,42 @@ ICON_DETECTION_SPECS = [
     {
         "icon": "zhongli",
         "label": "中立",
-        "modes": {MODE_A_LOWSEC},
+        "modes": {MODE_A_LOWSEC, MODE_C_LOWSEC_ACTIVE},
         "threshold": GENERAL_TEMPLATE_THRESHOLD,
         "cnn_threshold": GENERAL_CNN_THRESHOLD,
     },
     {
         "icon": "zuifan",
         "label": "罪犯",
-        "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC},
+        "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC, MODE_C_LOWSEC_ACTIVE},
         "threshold": SUSPECT_TEMPLATE_THRESHOLD,
         "cnn_threshold": SUSPECT_CNN_THRESHOLD,
     },
     {
         "icon": "jisha",
         "label": "击杀",
-        "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC},
+        "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC, MODE_C_LOWSEC_ACTIVE},
         "threshold": GENERAL_TEMPLATE_THRESHOLD,
         "cnn_threshold": GENERAL_CNN_THRESHOLD,
     },
     {
         "icon": "xianfan",
         "label": "嫌犯",
-        "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC},
+        "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC, MODE_C_LOWSEC_ACTIVE},
         "threshold": SUSPECT_TEMPLATE_THRESHOLD,
         "cnn_threshold": SUSPECT_CNN_THRESHOLD,
     },
     {
         "icon": "didui",
         "label": "敌对",
-        "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC},
+        "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC, MODE_C_LOWSEC_ACTIVE},
         "threshold": 0.9,
         "cnn_threshold": 0.95,
     },
     {
         "icon": "buliang",
         "label": "不良",
-        "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC},
+        "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC, MODE_C_LOWSEC_ACTIVE},
         "threshold": GENERAL_TEMPLATE_THRESHOLD,
         "cnn_threshold": GENERAL_CNN_THRESHOLD,
     },
@@ -254,6 +261,7 @@ def main(mode=MODE_A_LOWSEC):
     """
     mode: 'A' 低安预警 - 只报警不规避，多监控「中立声望」
           'B' 高安预警 - 触发后进行规避
+          'C' 低安主动防御 - 任意图标触发后进行规避
     """
     global running
 
@@ -264,6 +272,9 @@ def main(mode=MODE_A_LOWSEC):
     elif mode == MODE_B_HIGHSEC:
         app_name = "GuardB"
         mode_desc = "高安主动预警(雷达主动检测,可自动规避)"
+    elif mode == MODE_C_LOWSEC_ACTIVE:
+        app_name = "GuardC"
+        mode_desc = "低安主动防御(雷达主动检测,任意目标触发即规避)"
 
     print_startup(app_name, ["按 Ctrl+F12 可停止程序", f"模式: {mode_desc}"])
     
@@ -273,10 +284,13 @@ def main(mode=MODE_A_LOWSEC):
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()
 
+    if not is_game_exefile_running():
+        print("游戏未启动, 请先启动游戏")
+        return 1
+    print("游戏检测中...请稍后...")
     played_start_sound = False
     while running:
         if not played_start_sound:
-            print("游戏检测中...请稍后...")
             play_sound_wav("static/Login_Connecting.wav")
             played_start_sound = True
         loop_start = time.time()
@@ -293,7 +307,8 @@ def main(mode=MODE_A_LOWSEC):
         try:
             # A 模式：不做任何键鼠操作；B 模式可触发雷达扫描（鼠标中键）
             play_sound_wav("static/faction.wav")
-            if mode == MODE_B_HIGHSEC:
+            # if mode in {MODE_B_HIGHSEC, MODE_C_LOWSEC_ACTIVE}:
+            if mode in {MODE_B_HIGHSEC}:
                 # 使用鼠标中键触发雷达扫描：按住0.1秒再松开
                 pyautogui.mouseDown(button='middle')
                 print("雷达扫描中...")
@@ -327,13 +342,13 @@ def main(mode=MODE_A_LOWSEC):
 
             icon_found = total_icon_count > 0
 
-            # 文字识别：「促进」。仅 B 模式检测，A 模式不检测促进
-            if mode == MODE_A_LOWSEC:
-                txt_count = 0
-                txt_found = False
-            else:
+            # 文字识别：「促进」。仅 B 模式检测，A/C 模式不检测促进
+            if mode == MODE_B_HIGHSEC:
                 txt_count = find_txt_ocr3("促进", 1, right_panel)
                 txt_found = txt_count >= 2
+            else:
+                txt_count = 0
+                txt_found = False
 
             total_danger_count = total_icon_count + txt_count
 
@@ -363,6 +378,13 @@ def main(mode=MODE_A_LOWSEC):
                 reason = f"发现{'、'.join(danger_items)}"
                 #emergency_evasion(reason)
                 emergency_evade_pin999(center_panel2)
+            elif mode == MODE_C_LOWSEC_ACTIVE and total_icon_count >= 1:
+                icon_summary = {}
+                for name, _ in icon_details_summary:
+                    icon_summary[name] = icon_summary.get(name, 0) + 1
+                icon_str = ', '.join([f"{name}{count}个" if count > 1 else name for name, count in icon_summary.items()])
+                reason = f"发现图标{icon_str}(共{total_icon_count}个)"
+                emergency_evade_pin999(center_panel2)
 
             if icon_found or txt_found:
                 time.sleep(2)
@@ -370,9 +392,9 @@ def main(mode=MODE_A_LOWSEC):
         except IconNotFoundException as e:
             print(e)
 
-        # 统一补足到约 TARGET_INTERVAL_SEC 秒一轮（B 约 2.4s 补到 5s，A 不检促进约 5s）
         elapsed = time.time() - loop_start
-        time.sleep(max(0, TARGET_INTERVAL_SEC - elapsed))
+        target_interval_sec = random.uniform(TARGET_INTERVAL_MIN_SEC, TARGET_INTERVAL_MAX_SEC)
+        time.sleep(max(0, target_interval_sec - elapsed))
 
     listener.join()
     play_sound_wav("static/Notification_Ping.wav")
@@ -435,13 +457,15 @@ def emergency_evade_pin999(
         return False
 
     if _find_and_click_first(action_text):
-        print("紧急规避已启动,程序终止")
-        speak("紧急规避已启动,程序终止")
+        print("紧急规避已启动,程序运行结束")
+        speak("紧急规避已启动,程序运行结束")
+        play_sound_wav("static/Notification_Ping.wav")
         sys.exit(1)
 
     if _find_and_click_first(fallback_action_text):
-        speak("紧急规避已启动,程序终止")
-        print("紧急规避已启动,程序终止")
+        speak("紧急规避已启动,程序运行结束")
+        print("紧急规避已启动,程序运行结束")
+        play_sound_wav("static/Notification_Ping.wav")
         sys.exit(1)
 
     # 都失败：回退

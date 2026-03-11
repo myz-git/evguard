@@ -201,6 +201,44 @@ exe_gb = EXE(
     contents_directory="_internal",
 )
 
+# ========= GuardC =========
+a_gc = Analysis(
+    [os.path.join(project_dir, "GuardC.py")],
+    pathex=[project_dir],
+    binaries=[],
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=excludes,
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+pyz_gc = PYZ(a_gc.pure, a_gc.zipped_data, cipher=block_cipher)
+
+exe_gc = EXE(
+    pyz_gc,
+    a_gc.scripts,
+    [], [], [], [],
+    name="GuardC",
+    icon=os.path.join(project_dir, "icon", "eva.ico"),
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    exclude_binaries=True,
+    contents_directory="_internal",
+)
+
 # ========= START GUI =========
 a_start = Analysis(
     [os.path.join(project_dir, "start.py")],
@@ -229,7 +267,7 @@ exe_start = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -239,16 +277,17 @@ exe_start = EXE(
     contents_directory="_internal",
 )
 
-# ========= COLLECT: 5 EXEs + shared deps/resources =========
+# ========= COLLECT: 6 EXEs + shared deps/resources =========
 coll = COLLECT(
     exe_fsd0,
     exe_fsd10,
     exe_ga,
     exe_gb,
+    exe_gc,
     exe_start,
-    a_fsd0.binaries + a_fsd10.binaries + a_ga.binaries + a_gb.binaries + a_start.binaries,
-    a_fsd0.zipfiles + a_fsd10.zipfiles + a_ga.zipfiles + a_gb.zipfiles + a_start.zipfiles,
-    a_fsd0.datas + a_fsd10.datas + a_ga.datas + a_gb.datas + a_start.datas,
+    a_fsd0.binaries + a_fsd10.binaries + a_ga.binaries + a_gb.binaries + a_gc.binaries + a_start.binaries,
+    a_fsd0.zipfiles + a_fsd10.zipfiles + a_ga.zipfiles + a_gb.zipfiles + a_gc.zipfiles + a_start.zipfiles,
+    a_fsd0.datas + a_fsd10.datas + a_ga.datas + a_gb.datas + a_gc.datas + a_start.datas,
     strip=False,
     upx=False,
     name="FsdGuard",   # dist/FsdGuard/

@@ -1,6 +1,7 @@
 {
-  "Fsd0": "D:\\Workspace\\git\\evguard\\dist\\FsdGuard\\FSD0.exe",
-  "Fsd10": "D:\\Workspace\\git\\evguard\\dist\\FsdGuard\\FSD10.exe",
-  "GuardA": "D:\\Workspace\\git\\evguard\\dist\\FsdGuard\\GuardA.exe",
-  "GuardB": "D:\\Workspace\\git\\evguard\\dist\\FsdGuard\\GuardB.exe"
+  "Fsd0": "D:\\Workspace\\git\\evguard\\fsd0.py",
+  "Fsd10": "D:\\Workspace\\git\\evguard\\fsd10.py",
+  "GuardA": "D:\\Workspace\\git\\evguard\\GuardA.py",
+  "GuardB": "D:\\Workspace\\git\\evguard\\GuardB.py",
+  "GuardC": "D:\\Workspace\\git\\evguard\\GuardC.py"
 }
