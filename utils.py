@@ -11,6 +11,8 @@ import sys
 import re
 import json
 import time
+import random
+import math
 import logging
 import subprocess
 import threading
@@ -21,6 +23,7 @@ import cv2
 import numpy as np
 import pyautogui
 from cnocr import CnOcr
+from human_control import HumanMouse
 
 import torch
 import torch.nn as nn
@@ -60,6 +63,90 @@ os.makedirs(DEBUG_DIR, exist_ok=True)
 _SHARED_UI_LOG_FILE = os.environ.get("EVGUARD_UI_LOG_FILE", "").strip()
 _SHARED_UI_LOG_PREFIX = os.environ.get("EVGUARD_UI_LOG_PREFIX", "").strip()
 _SHARED_UI_LOG_LOCK = threading.RLock()
+_LAST_MOUSE_TARGET_SIZE: Optional[Tuple[int, int]] = None
+_HUMAN_MOUSE = HumanMouse(human_factor=0.9, default_duration=0.12, default_offset=5)
+
+
+def random_mouse_click_interval_sec() -> float:
+    """返回鼠标按下到抬起的随机间隔，单位秒。"""
+    return random.uniform(0.08, 0.18)
+
+
+def _remember_mouse_target_size(target_size: Optional[Tuple[int, int]]) -> None:
+    global _LAST_MOUSE_TARGET_SIZE
+    _LAST_MOUSE_TARGET_SIZE = target_size
+
+
+def _adaptive_click_offset_px(target_size: Optional[Tuple[int, int]] = None) -> int:
+    """按目标尺寸返回点击偏移上限像素。"""
+    width, height = target_size or _LAST_MOUSE_TARGET_SIZE or (48, 24)
+    is_small_target = max(width, height) <= 80 and (width * height) <= 5000
+    return 3 if is_small_target else 5
+
+
+def _move_duration_for_distance(x: int, y: int) -> float:
+    sx, sy = pyautogui.position()
+    distance = math.hypot(x - sx, y - sy)
+    return min(0.16, max(0.05, distance / 1800.0))
+
+
+def mouse_click(
+    button: str = "left",
+    clicks: int = 1,
+    interval_sec: Optional[float] = None,
+    target_size: Optional[Tuple[int, int]] = None,
+) -> None:
+    """统一鼠标点击动作：按下 -> 随机等待 -> 抬起。"""
+    if clicks <= 0:
+        return
+
+    offset_px = _adaptive_click_offset_px(target_size)
+    press_duration = random_mouse_click_interval_sec()
+    for idx in range(clicks):
+        if button == "left":
+            _HUMAN_MOUSE.click_left(offset=offset_px, press_duration=press_duration, move_duration=0.03)
+        elif button == "right":
+            _HUMAN_MOUSE.click_right(offset=offset_px, press_duration=press_duration, move_duration=0.03)
+        elif button == "middle":
+            _HUMAN_MOUSE.click_middle(offset=offset_px, press_duration=press_duration, move_duration=0.03)
+        else:
+            raise ValueError(f"Unsupported mouse button: {button}")
+        if idx < clicks - 1:
+            time.sleep(interval_sec if interval_sec is not None else random_mouse_click_interval_sec())
+
+
+def human_move_to(x: int, y: int, target_size: Optional[Tuple[int, int]] = None) -> None:
+    """使用 human_control.py 中的 HumanMouse 执行人类化移动。"""
+    _remember_mouse_target_size(target_size)
+    _HUMAN_MOUSE.move_to(x, y, duration=_move_duration_for_distance(x, y))
+
+
+def mouse_drag_rel(dx: int, dy: int, duration: float = 0.5, button: str = "left") -> None:
+    """使用 HumanMouse 执行相对拖动。"""
+    start_x, start_y = pyautogui.position()
+    target_x = start_x + dx
+    target_y = start_y + dy
+
+    if button == "left":
+        _HUMAN_MOUSE.press_left()
+    elif button == "right":
+        _HUMAN_MOUSE.press_right()
+    elif button == "middle":
+        _HUMAN_MOUSE.press_middle()
+    else:
+        raise ValueError(f"Unsupported mouse button: {button}")
+
+    time.sleep(random.uniform(0.08, 0.18))
+    _HUMAN_MOUSE.move_to(target_x, target_y, duration=duration, curvature=35)
+
+    if button == "left":
+        _HUMAN_MOUSE.release_left()
+    elif button == "right":
+        _HUMAN_MOUSE.release_right()
+    else:
+        _HUMAN_MOUSE.release_middle()
+
+    time.sleep(random.uniform(0.12, 0.3))
 
 
 def _append_shared_ui_log_line(line: str):
@@ -313,12 +400,12 @@ def preprocess_image(image: np.ndarray) -> np.ndarray:
 def scrollscreen():
     """水平转动屏幕（会移动鼠标/改变视角，请慎用）"""
     time.sleep(1)
-    pyautogui.moveTo(250, 700)
-    pyautogui.dragRel(-30, 0, 0.5, pyautogui.easeOutQuad)
+    human_move_to(250, 700)
+    mouse_drag_rel(-30, 0, duration=0.5, button="left")
 
 def hscrollscreen():
     """垂直滑动（可选）"""
-    pyautogui.moveTo(1600, 400)
+    human_move_to(1600, 400)
     pyautogui.scroll(-2000)
     time.sleep(1)
 
@@ -334,7 +421,7 @@ def _get_ocr() -> CnOcr:
         _OCR_INSTANCE = CnOcr(rec_model_name="scene-densenet_lite_246-gru_base")
     return _OCR_INSTANCE
 
-def find_txt_ocr(txt: str, max_attempts=5, region=None, allow_scroll=True) -> bool:
+def find_txt_ocr(txt: str, max_attempts=5, region=None, allow_scroll=False) -> bool:
     """在屏幕区域内查找文本，找到则移动鼠标到文本中心并返回 True"""
     if region is None:
         fx, fy = pyautogui.size()
@@ -351,9 +438,11 @@ def find_txt_ocr(txt: str, max_attempts=5, region=None, allow_scroll=True) -> bo
         res = ocr.ocr(img)
         for line in res:
             if txt in line["text"]:
-                x = r[0] + line["position"][0][0] + (line["position"][1][0] - line["position"][0][0]) // 2
-                y = r[1] + line["position"][0][1] + (line["position"][2][1] - line["position"][0][1]) // 2
-                pyautogui.moveTo(x, y)
+                target_width = line["position"][1][0] - line["position"][0][0]
+                target_height = line["position"][2][1] - line["position"][0][1]
+                x = r[0] + line["position"][0][0] + target_width // 2
+                y = r[1] + line["position"][0][1] + target_height // 2
+                human_move_to(x, y, target_size=(target_width, target_height))
                 log_message("INFO", f"找到[{txt}] 坐标=({x},{y})")
                 return True
 
@@ -613,6 +702,7 @@ def _find_icon_candidates_one_shot(
                 "match_val": match_val,
                 "prob": prob,
                 "position": (px, py),
+                "target_size": (w, h),
             })
 
     return details_list, max_val
@@ -686,7 +776,7 @@ def find_icon_cnn(
     mx = d0["position"][0] + offset_x
     my = d0["position"][1] + offset_y
     if move:
-        pyautogui.moveTo(mx, my)
+        human_move_to(mx, my, target_size=d0.get("target_size"))
     return True
 
 
@@ -813,9 +903,9 @@ def safe_find_icon(
             time.sleep(0.15)
 
             if action in ("leftclick", "click", "left"):
-                pyautogui.leftClick()
+                mouse_click(button="left")
             elif action in ("rightclick", "right"):
-                pyautogui.rightClick()
+                mouse_click(button="right")
             # action == "none"/None: 不点击
 
             log_message("INFO", f"找到[{icon}] attempt={attempt+1}/{max_attempts} action={action}")
@@ -896,9 +986,9 @@ def rolljump2(max_attempts=0):
             log_message("INFO", "查找warp1")
             if safe_find_icon("warp1", control_panel, max_attempts=3):
                 log_message("INFO", "找到warp1，等待3秒后再次点击")
-                pyautogui.doubleClick()
+                mouse_click(clicks=2)
                 time.sleep(3)
-                pyautogui.doubleClick()  # 再次点击warp1
+                mouse_click(clicks=2)  # 再次点击warp1
                 time.sleep(1)
                 # 再点击jump2
                 log_message("INFO", "查找并点击jump2")

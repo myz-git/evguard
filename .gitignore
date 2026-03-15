@@ -3,6 +3,7 @@
 *.docx
 .DS_Store
 license*
+human_control.py
 __pycache__/
 local/
 pic/

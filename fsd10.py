@@ -1,4 +1,5 @@
 import time
+import random
 from pynput import keyboard
 import sys
 import logging
@@ -142,7 +143,7 @@ def main():
                     time.sleep(2)
                     return 0
 
-        time.sleep(1)
+        time.sleep(random.uniform(0.5, 2.0))
 
 if __name__ == "__main__":
     print_startup("FSD10", ["按 Ctrl+F12 可停止程序"])

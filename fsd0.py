@@ -1,4 +1,5 @@
 import time
+import random
 from pynput import keyboard
 import sys
 import logging
@@ -57,7 +58,7 @@ def main():
     played_start_sound = False    
     while running:
         if not played_start_sound:
-            play_sound_wav("static/started.wav")
+            # play_sound_wav("static/started.wav")
             played_start_sound = True
         if state == "set_destination":
             print("finding remote destination")
@@ -141,7 +142,7 @@ def main():
                     time.sleep(2)
                     return 0
 
-        time.sleep(1)
+        time.sleep(random.uniform(0.5, 2.0))
 
 if __name__ == "__main__":
     print_startup("FSD0", ["按 Ctrl+F12 可停止程序"])

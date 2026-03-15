@@ -20,6 +20,8 @@ from utils import (
     log_message,
     speak,
     play_sound_wav,
+    mouse_click,
+    human_move_to,
     print_startup,
     capture_screen_area,
     adjust_region,
@@ -245,9 +247,11 @@ def find_txt_ocr3_debug(txt, max_attempts=1, region=None):
             
             # 检查是否包含目标文字
             if txt in text:
-                x = region[0] + line['position'][0][0] + (line['position'][1][0] - line['position'][0][0]) // 2
-                y = region[1] + line['position'][0][1] + (line['position'][2][1] - line['position'][0][1]) // 2
-                pyautogui.moveTo(x, y)
+                target_width = line['position'][1][0] - line['position'][0][0]
+                target_height = line['position'][2][1] - line['position'][0][1]
+                x = region[0] + line['position'][0][0] + target_width // 2
+                y = region[1] + line['position'][0][1] + target_height // 2
+                human_move_to(x, y, target_size=(target_width, target_height))
                 # print(f"[OCR] 找到文字 {txt} 在位置 ({x}, {y})")
                 return True, ' | '.join(all_ocr_texts)
         
@@ -308,13 +312,12 @@ def main(mode=MODE_A_LOWSEC):
             # A 模式：不做任何键鼠操作；B 模式可触发雷达扫描（鼠标中键）
             play_sound_wav("static/faction.wav")
             # if mode in {MODE_B_HIGHSEC, MODE_C_LOWSEC_ACTIVE}:
-            if mode in {MODE_B_HIGHSEC}:
+            # if mode in {MODE_B_HIGHSEC}:
+            if mode in {"D"}:
                 # 使用鼠标中键触发雷达扫描：按住0.1秒再松开
-                pyautogui.mouseDown(button='middle')
+                mouse_click(button='middle')
                 print("雷达扫描中...")
                 
-                time.sleep(0.1)
-                pyautogui.mouseUp(button='middle')
             else:
                 print("扫描中...")
 
@@ -437,7 +440,7 @@ def emergency_evade_pin999(
         emergency_evasion('未找到安全点')
         return
 
-    pyautogui.click(button='right')
+    mouse_click(button='right')
     time.sleep(0.2)
 
     # 3) 在右键菜单区域优先找“带领舰队”，失败则找“跳跃至”
@@ -451,7 +454,7 @@ def emergency_evade_pin999(
         for r in menu_regions:
             okx = find_txt_ocr(menu_text, 1, r,allow_scroll=False)  # 找到会 moveTo
             if okx:
-                pyautogui.click(button='left')
+                mouse_click(button='left')
                 time.sleep(0.15)
                 return True
         return False
