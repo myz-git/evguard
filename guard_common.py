@@ -47,6 +47,17 @@ MODE_C_LOWSEC_ACTIVE = 'C'
 # 正常扫描间隔（秒）
 TARGET_INTERVAL_MIN_SEC = 3.0
 TARGET_INTERVAL_MAX_SEC = 5.0
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CFG_FILE = os.path.join(BASE_DIR, "cfg.txt")
+DEFAULT_RUNTIME_CFG = {
+    "location_hotkey": "l",
+    "dscan_enabled": False,
+    "dscan_hotkey": "middle",
+    "deep_safe_a": "PIN999",
+    "deep_safe_b": "PIN888",
+    "alarm_volume": "mid",
+    "alarm_sound": "static/soundmid.wav",
+}
 
 
 class IconNotFoundException(Exception):
@@ -56,6 +67,46 @@ class IconNotFoundException(Exception):
 class GoodsNotFoundException(Exception):
     """Exception raised when the specified goods are not found."""
     pass
+
+
+def load_runtime_cfg():
+    cfg = dict(DEFAULT_RUNTIME_CFG)
+    if not os.path.exists(CFG_FILE):
+        return cfg
+    try:
+        with open(CFG_FILE, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                cfg[key.strip().lower()] = value.strip()
+    except Exception:
+        return cfg
+
+    cfg["location_hotkey"] = str(cfg.get("location_hotkey", DEFAULT_RUNTIME_CFG["location_hotkey"])).strip().lower() or DEFAULT_RUNTIME_CFG["location_hotkey"]
+    cfg["dscan_enabled"] = str(cfg.get("dscan_enabled", DEFAULT_RUNTIME_CFG["dscan_enabled"])).strip().lower() in {"1", "true", "yes", "on"}
+    cfg["dscan_hotkey"] = str(cfg.get("dscan_hotkey", cfg.get("scankey", DEFAULT_RUNTIME_CFG["dscan_hotkey"]))).strip().lower() or DEFAULT_RUNTIME_CFG["dscan_hotkey"]
+    cfg["deep_safe_a"] = str(cfg.get("deep_safe_a", DEFAULT_RUNTIME_CFG["deep_safe_a"])).strip() or DEFAULT_RUNTIME_CFG["deep_safe_a"]
+    cfg["deep_safe_b"] = str(cfg.get("deep_safe_b", DEFAULT_RUNTIME_CFG["deep_safe_b"])).strip() or DEFAULT_RUNTIME_CFG["deep_safe_b"]
+    volume = str(cfg.get("alarm_volume", DEFAULT_RUNTIME_CFG["alarm_volume"])).strip().lower()
+    sound_map = {
+        "high": "static/soundhigh.wav",
+        "mid": "static/soundmid.wav",
+        "low": "static/soundlow.wav",
+    }
+    cfg["alarm_volume"] = volume if volume in sound_map else DEFAULT_RUNTIME_CFG["alarm_volume"]
+    cfg["alarm_sound"] = sound_map[cfg["alarm_volume"]]
+    return cfg
+
+
+def trigger_dscan(hotkey):
+    key = str(hotkey or "").strip().lower()
+    if key in {"left", "middle", "right"}:
+        mouse_click(button=key)
+        return
+    if key:
+        pyautogui.press(key)
 
 
 def emergency_evasion(reason):
@@ -281,6 +332,7 @@ def main(mode=MODE_A_LOWSEC):
         mode_desc = "低安主动防御(雷达主动检测,任意目标触发即规避)"
 
     print_startup(app_name, ["按 Ctrl+F12 可停止程序", f"模式: {mode_desc}"])
+    runtime_cfg = load_runtime_cfg()
     
     
 
@@ -313,9 +365,9 @@ def main(mode=MODE_A_LOWSEC):
             play_sound_wav("static/faction.wav")
             # if mode in {MODE_B_HIGHSEC, MODE_C_LOWSEC_ACTIVE}:
             # if mode in {MODE_B_HIGHSEC}:
-            if mode in {"D"}:
-                # 使用鼠标中键触发雷达扫描：按住0.1秒再松开
-                mouse_click(button='middle')
+            if mode == MODE_B_HIGHSEC and runtime_cfg.get("dscan_enabled", DEFAULT_RUNTIME_CFG["dscan_enabled"]):
+                # 通过 cfg.txt 配置 D-SCAN 触发方式。
+                trigger_dscan(runtime_cfg.get("dscan_hotkey"))
                 print("雷达扫描中...")
                 
             else:
@@ -357,7 +409,7 @@ def main(mode=MODE_A_LOWSEC):
 
             # 任一触发则声音告警
             if icon_found or txt_found:
-                play_sound_wav('static/sound.wav')
+                play_sound_wav(runtime_cfg.get("alarm_sound", DEFAULT_RUNTIME_CFG["alarm_sound"]))
                 if icon_found:
                     icon_summary = {}
                     for name, _ in icon_details_summary:
@@ -380,14 +432,24 @@ def main(mode=MODE_A_LOWSEC):
                     danger_items.append(f"可疑舰船{txt_count}个")
                 reason = f"发现{'、'.join(danger_items)}"
                 #emergency_evasion(reason)
-                emergency_evade_pin999(center_panel2)
+                emergency_evade_pin999(
+                    center_panel2,
+                    open_key=runtime_cfg.get("location_hotkey", DEFAULT_RUNTIME_CFG["location_hotkey"]),
+                    pin_text=runtime_cfg.get("deep_safe_a", DEFAULT_RUNTIME_CFG["deep_safe_a"]),
+                    backup_pin_text=runtime_cfg.get("deep_safe_b", DEFAULT_RUNTIME_CFG["deep_safe_b"]),
+                )
             elif mode == MODE_C_LOWSEC_ACTIVE and total_icon_count >= 1:
                 icon_summary = {}
                 for name, _ in icon_details_summary:
                     icon_summary[name] = icon_summary.get(name, 0) + 1
                 icon_str = ', '.join([f"{name}{count}个" if count > 1 else name for name, count in icon_summary.items()])
                 reason = f"发现图标{icon_str}(共{total_icon_count}个)"
-                emergency_evade_pin999(center_panel2)
+                emergency_evade_pin999(
+                    center_panel2,
+                    open_key=runtime_cfg.get("location_hotkey", DEFAULT_RUNTIME_CFG["location_hotkey"]),
+                    pin_text=runtime_cfg.get("deep_safe_a", DEFAULT_RUNTIME_CFG["deep_safe_a"]),
+                    backup_pin_text=runtime_cfg.get("deep_safe_b", DEFAULT_RUNTIME_CFG["deep_safe_b"]),
+                )
 
             if icon_found or txt_found:
                 time.sleep(2)
@@ -408,6 +470,7 @@ def emergency_evade_pin999(
     place_region=None,
     open_key='l',
     pin_text='PIN999',
+    backup_pin_text='PIN888',
     action_text='带领舰队',
     fallback_action_text='跃迁至',
 ):
@@ -433,8 +496,10 @@ def emergency_evade_pin999(
     pyautogui.press(open_key)
     time.sleep(0.2)
 
-    # 2) 找 PIN999（第一个）并右键
+    # 2) 优先找深空点 A，失败后回退到深空点 B。
     ok = find_txt_ocr(pin_text, 1, place_region,allow_scroll=False) if place_region else find_txt_ocr(pin_text, 1,allow_scroll=False)
+    if not ok and backup_pin_text:
+        ok = find_txt_ocr(backup_pin_text, 1, place_region,allow_scroll=False) if place_region else find_txt_ocr(backup_pin_text, 1,allow_scroll=False)
     if not ok:
         speak("未找到安全点")
         emergency_evasion('未找到安全点')

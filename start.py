@@ -104,6 +104,24 @@ BUTTON_THEME = {
     "soft": {"bg": "#3a4654", "fg": "#e5e7eb", "hover": "#4b5a6b", "border": "#64748b"},
 }
 
+DEFAULT_CFG = {
+    "version": "3.6",
+    "location_hotkey": "L",
+    "dscan_enabled": False,
+    "dscan_hotkey": "middle",
+    "scankey": "middle",
+    "deep_safe_a": "PIN999",
+    "deep_safe_b": "PIN888",
+    "alarm_volume": "mid",
+    "alarm_sound": "static/soundmid.wav",
+}
+
+ALARM_VOLUME_OPTIONS = {
+    "Low": ("low", "static/soundlow.wav"),
+    "Medium": ("mid", "static/soundmid.wav"),
+    "High": ("high", "static/soundhigh.wav"),
+}
+
 
 def load_commands():
     # 打包后的 start.exe：始终调用当前目录下的其它 exe，不读写 commands.json
@@ -130,7 +148,7 @@ def load_commands():
 
 
 def load_cfg():
-    config = {}
+    config = dict(DEFAULT_CFG)
     if not os.path.exists(CFG_FILE):
         return config
 
@@ -143,9 +161,67 @@ def load_cfg():
                 key, value = line.split("=", 1)
                 config[key.strip().lower()] = value.strip()
     except Exception:
-        return {}
+        return dict(DEFAULT_CFG)
 
+    if not config.get("location_hotkey"):
+        config["location_hotkey"] = DEFAULT_CFG["location_hotkey"]
+    config["dscan_enabled"] = str(config.get("dscan_enabled", DEFAULT_CFG["dscan_enabled"])).strip().lower() in {"1", "true", "yes", "on"}
+    if not config.get("dscan_hotkey"):
+        config["dscan_hotkey"] = config.get("scankey", DEFAULT_CFG["dscan_hotkey"])
+    config["scankey"] = config["dscan_hotkey"]
+    if not config.get("deep_safe_a"):
+        config["deep_safe_a"] = DEFAULT_CFG["deep_safe_a"]
+    if not config.get("deep_safe_b"):
+        config["deep_safe_b"] = DEFAULT_CFG["deep_safe_b"]
+
+    volume = str(config.get("alarm_volume", DEFAULT_CFG["alarm_volume"])).strip().lower()
+    if volume not in {"high", "mid", "low"}:
+        volume = DEFAULT_CFG["alarm_volume"]
+    config["alarm_volume"] = volume
+    config["alarm_sound"] = {
+        "high": "static/soundhigh.wav",
+        "mid": "static/soundmid.wav",
+        "low": "static/soundlow.wav",
+    }[volume]
     return config
+
+
+def save_cfg(config):
+    merged = dict(DEFAULT_CFG)
+    merged.update(config or {})
+    merged["location_hotkey"] = str(merged.get("location_hotkey", DEFAULT_CFG["location_hotkey"])).strip() or DEFAULT_CFG["location_hotkey"]
+    merged["dscan_enabled"] = bool(merged.get("dscan_enabled", DEFAULT_CFG["dscan_enabled"]))
+    merged["dscan_hotkey"] = str(merged.get("dscan_hotkey", DEFAULT_CFG["dscan_hotkey"])).strip().lower() or DEFAULT_CFG["dscan_hotkey"]
+    merged["scankey"] = merged["dscan_hotkey"]
+    merged["deep_safe_a"] = str(merged.get("deep_safe_a", DEFAULT_CFG["deep_safe_a"])).strip() or DEFAULT_CFG["deep_safe_a"]
+    merged["deep_safe_b"] = str(merged.get("deep_safe_b", DEFAULT_CFG["deep_safe_b"])).strip() or DEFAULT_CFG["deep_safe_b"]
+
+    volume = str(merged.get("alarm_volume", DEFAULT_CFG["alarm_volume"])).strip().lower()
+    if volume not in {"high", "mid", "low"}:
+        volume = DEFAULT_CFG["alarm_volume"]
+    merged["alarm_volume"] = volume
+    merged["alarm_sound"] = {
+        "high": "static/soundhigh.wav",
+        "mid": "static/soundmid.wav",
+        "low": "static/soundlow.wav",
+    }[volume]
+
+    ordered_keys = [
+        "version",
+        "location_hotkey",
+        "dscan_enabled",
+        "dscan_hotkey",
+        "scankey",
+        "deep_safe_a",
+        "deep_safe_b",
+        "alarm_volume",
+        "alarm_sound",
+    ]
+    with open(CFG_FILE, "w", encoding="utf-8") as f:
+        for key in ordered_keys:
+            value = "1" if key == "dscan_enabled" and merged[key] else merged[key]
+            f.write(f"{key.upper()}={value}\n")
+    return merged
 
 
 class ProcessManager:
@@ -484,9 +560,9 @@ class EvGuardApp:
         self._style_button(exit_btn, "danger")
         exit_btn.pack(side="right", padx=(8, 0))
 
-        refresh_btn = tk.Button(meta, text="REFRESH", command=self.refresh)
-        self._style_button(refresh_btn, "soft")
-        refresh_btn.pack(side="right", padx=(8, 0))
+        settings_btn = tk.Button(meta, text="SETTING", command=self.open_settings)
+        self._style_button(settings_btn, "soft")
+        settings_btn.pack(side="right", padx=(8, 0))
 
         stripe = tk.Frame(top, bg="#0f141b", height=2)
         stripe.pack(fill="x")
@@ -735,6 +811,312 @@ class EvGuardApp:
             self._update_one_status(name)
         self._update_summary()
         self._set_status_message("状态已刷新")
+
+    def open_settings(self):
+        self.config = load_cfg()
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Settings")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.configure(bg=COLORS["surface"])
+        dialog.grab_set()
+        dialog.geometry("400x360")
+
+        body = tk.Frame(dialog, bg=COLORS["surface"], padx=16, pady=16)
+        body.pack(fill="both", expand=True)
+        body.grid_columnconfigure(1, weight=1)
+
+        tk.Label(
+            body,
+            text="Recommend use the default settings",
+            justify="left",
+            anchor="w",
+            bg=COLORS["surface"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 9),
+            wraplength=440,
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 14))
+
+        mouse_display_map = {
+            "left": "Mouse Left",
+            "middle": "Mouse Middle",
+            "right": "Mouse Right",
+        }
+        display_to_mouse_map = {value: key for key, value in mouse_display_map.items()}
+        special_key_map = {
+            "space": "space",
+            "return": "enter",
+            "kp_enter": "enter",
+            "tab": "tab",
+            "escape": "esc",
+            "esc": "esc",
+            "backspace": "backspace",
+            "delete": "delete",
+            "insert": "insert",
+            "home": "home",
+            "end": "end",
+            "prior": "pageup",
+            "next": "pagedown",
+            "up": "up",
+            "down": "down",
+        }
+        ignored_keys = {
+            "shift_l",
+            "shift_r",
+            "control_l",
+            "control_r",
+            "alt_l",
+            "alt_r",
+            "win_l",
+            "win_r",
+            "super_l",
+            "super_r",
+        }
+        mouse_button_map = {1: "left", 2: "middle", 3: "right"}
+
+        def hotkey_to_display(value):
+            key = str(value or "").strip().lower()
+            if key in mouse_display_map:
+                return mouse_display_map[key]
+            return str(value or "").strip().upper()
+
+        def display_to_hotkey(value):
+            raw = str(value or "").strip()
+            if raw in display_to_mouse_map:
+                return display_to_mouse_map[raw]
+            return raw.lower()
+
+        def normalize_key(keysym):
+            raw = str(keysym or "").strip()
+            if not raw:
+                return None
+            lowered = raw.lower()
+            if lowered in ignored_keys:
+                return None
+            if lowered in special_key_map:
+                return special_key_map[lowered]
+            if len(lowered) == 1 and lowered.isprintable():
+                return lowered
+            if lowered.startswith("f") and lowered[1:].isdigit():
+                return lowered
+            return None
+
+        location_var = tk.StringVar(value=hotkey_to_display(self.config.get("location_hotkey", DEFAULT_CFG["location_hotkey"])))
+        dscan_enabled_var = tk.BooleanVar(value=bool(self.config.get("dscan_enabled", DEFAULT_CFG["dscan_enabled"])))
+        dscan_var = tk.StringVar(value=hotkey_to_display(self.config.get("dscan_hotkey", DEFAULT_CFG["dscan_hotkey"])))
+        safe_a_var = tk.StringVar(value=self.config.get("deep_safe_a", DEFAULT_CFG["deep_safe_a"]))
+        safe_b_var = tk.StringVar(value=self.config.get("deep_safe_b", DEFAULT_CFG["deep_safe_b"]))
+        current_volume = str(self.config.get("alarm_volume", DEFAULT_CFG["alarm_volume"])).strip().lower()
+        volume_label = next((label for label, (code, _) in ALARM_VOLUME_OPTIONS.items() if code == current_volume), "Medium")
+        volume_var = tk.StringVar(value=volume_label)
+
+        def add_row(row, label_text, widget):
+            tk.Label(
+                body,
+                text=label_text,
+                anchor="w",
+                bg=COLORS["surface"],
+                fg=COLORS["text"],
+                font=("Segoe UI", 10),
+                width=14,
+            ).grid(row=row, column=0, sticky="w", pady=6, padx=(0, 10))
+            widget.grid(row=row, column=1, sticky="ew", pady=6)
+
+        def center_dialog(window):
+            width = window.winfo_width() or window.winfo_reqwidth()
+            height = window.winfo_height() or window.winfo_reqheight()
+            x = self.root.winfo_rootx() + max(20, (self.root.winfo_width() - width) // 2)
+            y = self.root.winfo_rooty() + max(20, (self.root.winfo_height() - height) // 2)
+            window.geometry(f"{width}x{height}+{x}+{y}")
+
+        def open_hotkey_capture(title, variable, allow_mouse=False):
+            capture = tk.Toplevel(dialog)
+            capture.title(title)
+            capture.transient(dialog)
+            capture.resizable(False, False)
+            capture.configure(bg=COLORS["surface"])
+            capture.grab_set()
+            capture.attributes("-topmost", True)
+
+            content = tk.Frame(capture, bg=COLORS["surface"], padx=18, pady=18)
+            content.pack(fill="both", expand=True)
+
+            tk.Label(
+                content,
+                text=title,
+                anchor="w",
+                bg=COLORS["surface"],
+                fg=COLORS["text"],
+                font=("Bahnschrift", 12, "bold"),
+            ).pack(anchor="w")
+
+            message = "Press one key to record. Press Esc to cancel."
+            if allow_mouse:
+                message += " Mouse left, middle and right are also supported."
+            tk.Label(
+                content,
+                text=message,
+                justify="left",
+                anchor="w",
+                bg=COLORS["surface"],
+                fg=COLORS["muted"],
+                font=("Segoe UI", 9),
+                wraplength=340,
+            ).pack(anchor="w", pady=(8, 0))
+
+            current_value = variable.get().strip() or "Not set"
+            tk.Label(
+                content,
+                text=f"Current: {current_value}",
+                anchor="w",
+                bg=COLORS["surface"],
+                fg=COLORS["brand_dark"],
+                font=("Segoe UI", 9),
+            ).pack(anchor="w", pady=(10, 0))
+
+            mouse_ready = {"value": not allow_mouse}
+
+            def close_capture():
+                if capture.winfo_exists():
+                    capture.grab_release()
+                    capture.destroy()
+
+            def commit_value(stored):
+                variable.set(hotkey_to_display(stored))
+                close_capture()
+
+            def on_key_press(event):
+                normalized = normalize_key(event.keysym)
+                if normalized == "esc":
+                    close_capture()
+                    return "break"
+                if normalized:
+                    commit_value(normalized)
+                return "break"
+
+            def on_mouse_press(event):
+                if not allow_mouse or not mouse_ready["value"]:
+                    return "break"
+                button_name = mouse_button_map.get(event.num)
+                if button_name:
+                    commit_value(button_name)
+                return "break"
+
+            capture.bind("<KeyPress>", on_key_press)
+            capture.bind("<ButtonPress-1>", on_mouse_press)
+            capture.bind("<ButtonPress-2>", on_mouse_press)
+            capture.bind("<ButtonPress-3>", on_mouse_press)
+            capture.protocol("WM_DELETE_WINDOW", close_capture)
+            capture.after(250, lambda: mouse_ready.__setitem__("value", True))
+            center_dialog(capture)
+            capture.focus_force()
+
+        def build_hotkey_field(variable, title, allow_mouse=False):
+            field = tk.Frame(body, bg=COLORS["surface"])
+            field.grid_columnconfigure(0, weight=1)
+
+            value_label = tk.Label(
+                field,
+                textvariable=variable,
+                anchor="w",
+                bg="#0b1220",
+                fg=COLORS["text"],
+                padx=10,
+                pady=6,
+                relief="flat",
+                width=24,
+            )
+            value_label.grid(row=0, column=0, sticky="ew")
+
+            record_btn = tk.Button(field, text="Record", command=lambda: open_hotkey_capture(title, variable, allow_mouse=allow_mouse))
+            self._style_button(record_btn, "soft")
+            record_btn.grid(row=0, column=1, padx=(8, 0))
+            return field, value_label, record_btn
+
+        location_field, _, _ = build_hotkey_field(location_var, "Record Location Hotkey", allow_mouse=False)
+        add_row(2, "Location Key", location_field)
+
+        dscan_toggle = tk.Checkbutton(
+            body,
+            text="",
+            variable=dscan_enabled_var,
+            bg=COLORS["surface"],
+            fg=COLORS["text"],
+            selectcolor="#0b1220",
+            activebackground=COLORS["surface"],
+            activeforeground=COLORS["text"],
+            anchor="w",
+        )
+        add_row(3, "Enable D-Scan", dscan_toggle)
+
+        dscan_field, dscan_value_label, dscan_record_btn = build_hotkey_field(dscan_var, "Record D-Scan Hotkey", allow_mouse=True)
+        add_row(4, "D-Scan Key", dscan_field)
+
+        def sync_dscan_controls():
+            enabled = dscan_enabled_var.get()
+            dscan_value_label.configure(
+                fg=COLORS["text"] if enabled else COLORS["muted"],
+                bg="#0b1220" if enabled else "#1f2937",
+            )
+            dscan_record_btn.configure(state="normal" if enabled else "disabled")
+
+        dscan_enabled_var.trace_add("write", lambda *_: sync_dscan_controls())
+        sync_dscan_controls()
+
+        safe_a_entry = tk.Entry(body, textvariable=safe_a_var, bg="#0b1220", fg=COLORS["text"], insertbackground=COLORS["text"], relief="flat")
+        add_row(5, "Safe Point A", safe_a_entry)
+
+        safe_b_entry = tk.Entry(body, textvariable=safe_b_var, bg="#0b1220", fg=COLORS["text"], insertbackground=COLORS["text"], relief="flat")
+        add_row(6, "Safe Point B", safe_b_entry)
+
+        volume_combo = ttk.Combobox(body, textvariable=volume_var, values=list(ALARM_VOLUME_OPTIONS.keys()), state="readonly")
+        volume_combo.configure(width=22)
+        add_row(7, "Alarm Volume", volume_combo)
+
+        footer = tk.Frame(body, bg=COLORS["surface"])
+        footer.grid(row=8, column=0, columnspan=2, sticky="e", pady=(12, 0))
+
+        def reset_defaults():
+            location_var.set(hotkey_to_display(DEFAULT_CFG["location_hotkey"]))
+            dscan_enabled_var.set(DEFAULT_CFG["dscan_enabled"])
+            dscan_var.set(hotkey_to_display(DEFAULT_CFG["dscan_hotkey"]))
+            safe_a_var.set(DEFAULT_CFG["deep_safe_a"])
+            safe_b_var.set(DEFAULT_CFG["deep_safe_b"])
+            volume_var.set("Medium")
+
+        def save_settings():
+            volume_name = volume_var.get().strip() or "Medium"
+            volume_code, sound_path = ALARM_VOLUME_OPTIONS.get(volume_name, ALARM_VOLUME_OPTIONS["Medium"])
+            next_config = dict(self.config)
+            next_config.update(
+                {
+                    "location_hotkey": display_to_hotkey(location_var.get().strip() or DEFAULT_CFG["location_hotkey"]).upper(),
+                    "dscan_enabled": dscan_enabled_var.get(),
+                    "dscan_hotkey": display_to_hotkey(dscan_var.get().strip() or DEFAULT_CFG["dscan_hotkey"]),
+                    "deep_safe_a": safe_a_var.get().strip() or DEFAULT_CFG["deep_safe_a"],
+                    "deep_safe_b": safe_b_var.get().strip() or DEFAULT_CFG["deep_safe_b"],
+                    "alarm_volume": volume_code,
+                    "alarm_sound": sound_path,
+                }
+            )
+            self.config = save_cfg(next_config)
+            self._set_status_message("Settings saved to cfg.txt")
+            dialog.destroy()
+
+        save_btn = tk.Button(footer, text="Save", command=save_settings)
+        self._style_button(save_btn, "primary")
+        save_btn.pack(side="right")
+
+        reset_btn = tk.Button(footer, text="Reset", command=reset_defaults)
+        self._style_button(reset_btn, "soft")
+        reset_btn.pack(side="right", padx=(0, 8))
+
+        cancel_btn = tk.Button(footer, text="Cancel", command=dialog.destroy)
+        self._style_button(cancel_btn, "soft")
+        cancel_btn.pack(side="right", padx=(0, 8))
+
+        dialog.update_idletasks()
+        center_dialog(dialog)
 
     def exit_all(self):
         self.running = False

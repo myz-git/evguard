@@ -64,7 +64,7 @@ _SHARED_UI_LOG_FILE = os.environ.get("EVGUARD_UI_LOG_FILE", "").strip()
 _SHARED_UI_LOG_PREFIX = os.environ.get("EVGUARD_UI_LOG_PREFIX", "").strip()
 _SHARED_UI_LOG_LOCK = threading.RLock()
 _LAST_MOUSE_TARGET_SIZE: Optional[Tuple[int, int]] = None
-_HUMAN_MOUSE = HumanMouse(human_factor=0.9, default_duration=0.12, default_offset=5)
+_HUMAN_MOUSE = HumanMouse(human_factor=0.9, default_duration=0.12, default_offset=3)
 
 
 def random_mouse_click_interval_sec() -> float:
@@ -77,11 +77,14 @@ def _remember_mouse_target_size(target_size: Optional[Tuple[int, int]]) -> None:
     _LAST_MOUSE_TARGET_SIZE = target_size
 
 
+def _is_large_target(target_size: Optional[Tuple[int, int]] = None) -> bool:
+    width, height = target_size or _LAST_MOUSE_TARGET_SIZE or (48, 24)
+    return min(width, height) > 38 and (width * height) > 320
+
+
 def _adaptive_click_offset_px(target_size: Optional[Tuple[int, int]] = None) -> int:
     """按目标尺寸返回点击偏移上限像素。"""
-    width, height = target_size or _LAST_MOUSE_TARGET_SIZE or (48, 24)
-    is_small_target = max(width, height) <= 80 and (width * height) <= 5000
-    return 3 if is_small_target else 5
+    return 5 if _is_large_target(target_size) else 3
 
 
 def _move_duration_for_distance(x: int, y: int) -> float:
@@ -119,6 +122,7 @@ def human_move_to(x: int, y: int, target_size: Optional[Tuple[int, int]] = None)
     """使用 human_control.py 中的 HumanMouse 执行人类化移动。"""
     _remember_mouse_target_size(target_size)
     _HUMAN_MOUSE.move_to(x, y, duration=_move_duration_for_distance(x, y))
+    pyautogui.moveTo(int(x), int(y), duration=0.02)
 
 
 def mouse_drag_rel(dx: int, dy: int, duration: float = 0.5, button: str = "left") -> None:
