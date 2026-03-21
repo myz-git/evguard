@@ -4,7 +4,7 @@ from pynput import keyboard
 import sys
 import logging
 from license_utils import ensure_license_or_exit
-from utils import play_sound_wav, log_message, print_startup, safe_find_icon, hscrollscreen, rolljump, screen_regions, find_txt_ocr, speak, suppress_not_found_warnings_console, is_game_exefile_running
+from utils import play_sound_wav, log_message, print_startup, safe_find_icon, safe_find_any_icon, hscrollscreen, rolljump, screen_regions, find_txt_ocr, dump_ocr_texts, speak, suppress_not_found_warnings_console, is_game_exefile_running
 
 
 ensure_license_or_exit()
@@ -85,12 +85,12 @@ def main():
         elif state == "find_gate":
             print("finding jump gate")
             gate_icons = [
+                ("jump0", 2),
                 ("jump8", 1),
                 ("jump7", 1),
                 ("jump6", 1),
                 ("jump5", 1),
                 ("jump4", 1),
-                ("jump0", 2),  # jump0 保持 max_attempts=2
             ]
 
             if any(
@@ -112,7 +112,7 @@ def main():
                 log_message("INFO", f"find_gate尝试第{find_gate_attempts}次", screenshot=False)
 
         elif state == "warp":
-            if safe_find_icon("jump3", region_full_right, max_attempts=1):
+            if safe_find_any_icon(["jump3", "jump3s"], region_full_right, max_attempts=1):
                 log_message("INFO", "找到jump3，切换到check_dock状态", screenshot=False)
                 state = "check_dock"
             else:
@@ -133,7 +133,6 @@ def main():
         elif state == "check_dock":
             # if safe_find_icon("out1", region_full_right, max_attempts=30,threshold=0.7, cnn_threshold=0.60, action=None):
             while running:
-                safe_find_icon("jump3", region_full_right, max_attempts=1)
                 # speak("已切换到check_dock状态,等待完成停靠")
                 if find_txt_ocr("离站",max_attempts=1,region=region_full_right):
                     log_message("INFO", "空间站已停靠，运行结束", screenshot=False)

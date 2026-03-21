@@ -27,6 +27,7 @@ from utils import (
     adjust_region,
     find_txt_ocr,
     find_txt_ocr3,
+    locate_txt_ocr,
     get_shared_ocr,
     screen_regions,
     ICON_DIR,
@@ -491,18 +492,73 @@ def emergency_evade_pin999(
     speak("紧急规避,发现可疑舰船")
     print("紧急规避,发现可疑舰船")
 
-    # 1) 打开地点面板
+    # 1) 先聚焦屏幕中部，再打开地点面板
+    screen_width, screen_height = pyautogui.size()
+    center_x = screen_width // 2
+    center_y = screen_height // 2
+    human_move_to(center_x, center_y, target_size=(160, 120))
+    mouse_click(button='left')
+    time.sleep(0.08)
+
+    # 2) 打开地点面板
     pyautogui.press(open_key)
     time.sleep(0.2)
 
-    # 2) 优先找深空点 A，失败后回退到深空点 B。
-    ok = find_txt_ocr(pin_text, 1, place_region,allow_scroll=False) if place_region else find_txt_ocr(pin_text, 1,allow_scroll=False)
-    if not ok and backup_pin_text:
-        ok = find_txt_ocr(backup_pin_text, 1, place_region,allow_scroll=False) if place_region else find_txt_ocr(backup_pin_text, 1,allow_scroll=False)
+    # 3) 只扫必要区域，避免重复查找和全屏误扫。
+    def _contains_region(outer, inner):
+        if not outer or not inner:
+            return False
+        ox, oy, ow, oh = outer
+        ix, iy, iw, ih = inner
+        return ox <= ix and oy <= iy and ox + ow >= ix + iw and oy + oh >= iy + ih
+
+    search_regions = []
+    for region in (
+        place_region,
+        screen_regions.get('center_panel2'),
+        screen_regions.get('center_panel'),
+    ):
+        if not region or region in search_regions:
+            continue
+        if any(_contains_region(existing, region) for existing in search_regions):
+            continue
+        search_regions.append(region)
+
+    ok = False
+    matched_pin = None
+    matched_region = None
+    matched_location = None
+
+    def _try_pin_regions(regions):
+        nonlocal ok, matched_pin, matched_region, matched_location
+        for region in regions:
+            location = locate_txt_ocr(pin_text, 1, region, allow_scroll=False, log_miss=False)
+            if location:
+                ok = True
+                matched_pin = pin_text
+                matched_region = region
+                matched_location = location
+                return True
+            location = locate_txt_ocr(backup_pin_text, 1, region, allow_scroll=False, log_miss=False) if backup_pin_text else None
+            if location:
+                ok = True
+                matched_pin = backup_pin_text
+                matched_region = region
+                matched_location = location
+                return True
+        return False
+
+    _try_pin_regions(search_regions)
+
     if not ok:
+        log_message("INFO", f"安全点查找失败: pin_a={pin_text}, pin_b={backup_pin_text}, place_region={place_region}, search_regions={search_regions}")
         speak("未找到安全点")
         emergency_evasion('未找到安全点')
         return
+
+    log_message("INFO", f"安全点命中: pin={matched_pin}, region={matched_region}")
+    human_move_to(matched_location["x"], matched_location["y"], target_size=matched_location["target_size"])
+    time.sleep(0.1)
 
     mouse_click(button='right')
     time.sleep(0.2)
@@ -516,10 +572,12 @@ def emergency_evade_pin999(
 
     def _find_and_click_first(menu_text: str) -> bool:
         for r in menu_regions:
-            okx = find_txt_ocr(menu_text, 1, r,allow_scroll=False)  # 找到会 moveTo
-            if okx:
+            location = locate_txt_ocr(menu_text, 1, r, allow_scroll=False, log_miss=False)
+            if location:
+                human_move_to(location["x"], location["y"], target_size=location["target_size"])
+                time.sleep(0.2)
                 mouse_click(button='left')
-                time.sleep(0.15)
+                time.sleep(0.2)
                 return True
         return False
 

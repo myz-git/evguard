@@ -12,7 +12,8 @@ project_dir = SPECPATH
 datas = [
     (os.path.join(project_dir, "icon"), "icon"),
     (os.path.join(project_dir, "model_cnn"), "model_cnn"),
-    (os.path.join(project_dir, "scene-densenet_lite_246-gru_base"), "scene-densenet_lite_246-gru_base"),
+    (os.path.join(project_dir, "1.2"), "1.2"),
+    (os.path.join(project_dir, "2.3"), "2.3"),
 ]
 
 

@@ -93,9 +93,8 @@ def save_image_cv(path: str, image) -> bool:
 
 ICON_DIR = resource_path("icon")
 MODEL_DIR = resource_path("model_cnn")
-LOCAL_CNOCR_MODEL_DIRNAME = "scene-densenet_lite_246-gru_base"
-LOCAL_CNOCR_MODEL_NAME = "scene-densenet_lite_246-gru_base"
-DEFAULT_CNOCR_MODEL_NAME = "scene-densenet_lite_136-gru"
+LOCAL_CNOCR_VERSION_DIRNAME = "2.3"
+DEFAULT_CNOCR_MODEL_NAME = "scene-densenet_lite_246-gru_base"
 DEFAULT_CNOCR_DET_MODEL_NAME = "naive_det"
 
 # =========================
@@ -464,8 +463,32 @@ def hscrollscreen():
 # =========================
 _OCR_INSTANCE: Optional[CnOcr] = None
 
-def _find_local_cnocr_model_fp() -> Optional[str]:
-    model_dir = resource_path(LOCAL_CNOCR_MODEL_DIRNAME)
+def _find_local_cnocr_root() -> Optional[str]:
+    version_dir = resource_path(LOCAL_CNOCR_VERSION_DIRNAME)
+    if os.path.isdir(version_dir):
+        return resource_path(".")
+    return None
+
+
+def _find_local_cnocr_model_fp(model_name: str) -> Optional[str]:
+    version_dir = resource_path(LOCAL_CNOCR_VERSION_DIRNAME)
+    model_dir = os.path.join(version_dir, model_name)
+    if not os.path.isdir(model_dir):
+        return None
+
+    for ext in (".onnx", ".ckpt"):
+        candidates = [
+            os.path.join(model_dir, name)
+            for name in sorted(os.listdir(model_dir))
+            if name.lower().endswith(ext)
+        ]
+        if candidates:
+            return candidates[0]
+    return None
+
+
+def _find_cnocr_model_file_from_root(rec_root: str, model_name: str) -> Optional[str]:
+    model_dir = os.path.join(rec_root, LOCAL_CNOCR_VERSION_DIRNAME, model_name)
     if not os.path.isdir(model_dir):
         return None
 
@@ -481,31 +504,40 @@ def _find_local_cnocr_model_fp() -> Optional[str]:
 
 
 def _resolve_cnocr_kwargs() -> Dict[str, str]:
-    rec_model_name = os.environ.get("EVGUARD_CNOCR_MODEL", "").strip()
+    rec_model_name = os.environ.get("EVGUARD_CNOCR_MODEL", DEFAULT_CNOCR_MODEL_NAME).strip() or DEFAULT_CNOCR_MODEL_NAME
     det_model_name = os.environ.get("EVGUARD_CNOCR_DET_MODEL", DEFAULT_CNOCR_DET_MODEL_NAME).strip() or DEFAULT_CNOCR_DET_MODEL_NAME
 
-    kwargs: Dict[str, str] = {
+    rec_root = os.environ.get("EVGUARD_CNOCR_ROOT", "").strip() or (_find_local_cnocr_root() or "")
+    det_root = os.environ.get("EVGUARD_CNOCR_DET_ROOT", "").strip() or rec_root
+
+    if rec_root:
+        rec_model_file = _find_cnocr_model_file_from_root(rec_root, rec_model_name)
+        if not rec_model_file:
+            raise FileNotFoundError(
+                f"未找到OCR模型文件: rec_root={rec_root}, model={rec_model_name}, "
+                f"期望目录={os.path.join(rec_root, LOCAL_CNOCR_VERSION_DIRNAME, rec_model_name)}"
+            )
+        kwargs: Dict[str, str] = {
+            "rec_model_name": rec_model_name,
+            "rec_root": rec_root,
+            "det_root": det_root,
+            "_resolved_model_fp": rec_model_file,
+        }
+        if os.environ.get("EVGUARD_CNOCR_FORCE_DET_MODEL", "").strip() == "1":
+            kwargs["det_model_name"] = det_model_name
+        return kwargs
+
+    kwargs = {
+        "rec_model_name": rec_model_name,
         "det_model_name": det_model_name,
     }
 
     rec_model_fp = os.environ.get("EVGUARD_CNOCR_MODEL_FP", "").strip()
     if not rec_model_fp:
-        rec_model_fp = _find_local_cnocr_model_fp() or ""
-
+        rec_model_fp = _find_local_cnocr_model_fp(rec_model_name) or ""
     if rec_model_fp:
-        kwargs["rec_model_name"] = rec_model_name or LOCAL_CNOCR_MODEL_NAME
         kwargs["rec_model_fp"] = rec_model_fp
         kwargs["rec_model_backend"] = "onnx" if rec_model_fp.lower().endswith(".onnx") else "pytorch"
-    else:
-        kwargs["rec_model_name"] = rec_model_name or DEFAULT_CNOCR_MODEL_NAME
-
-    rec_root = os.environ.get("EVGUARD_CNOCR_ROOT", "").strip()
-    if rec_root:
-        kwargs["rec_root"] = rec_root
-
-    det_root = os.environ.get("EVGUARD_CNOCR_DET_ROOT", "").strip()
-    if det_root:
-        kwargs["det_root"] = det_root
 
     return kwargs
 
@@ -515,20 +547,26 @@ def get_shared_ocr() -> CnOcr:
     if _OCR_INSTANCE is None:
         ocr_kwargs = _resolve_cnocr_kwargs()
         try:
+            init_kwargs = {k: v for k, v in ocr_kwargs.items() if not k.startswith("_")}
             log_message(
                 "INFO",
-                f"初始化OCR模型: rec={ocr_kwargs['rec_model_name']}, det={ocr_kwargs['det_model_name']}, "
-                f"rec_fp={ocr_kwargs.get('rec_model_fp', '') or 'auto'}",
+                f"初始化OCR模型: rec={ocr_kwargs['rec_model_name']}, "
+                f"det={ocr_kwargs.get('det_model_name', 'auto')}, "
+                f"rec_root={ocr_kwargs.get('rec_root', '') or 'auto'}, "
+                f"rec_fp={ocr_kwargs.get('rec_model_fp', '') or 'auto'}, "
+                f"resolved_fp={ocr_kwargs.get('_resolved_model_fp', '') or 'auto'}",
             )
-            _OCR_INSTANCE = CnOcr(**ocr_kwargs)
+            _OCR_INSTANCE = CnOcr(**init_kwargs)
         except Exception as exc:
             log_message(
                 "ERROR",
                 "OCR模型初始化失败。"
-                f" rec={ocr_kwargs['rec_model_name']}, det={ocr_kwargs['det_model_name']}, "
-                f"rec_fp={ocr_kwargs.get('rec_model_fp', '') or 'auto'}, err={exc}. "
+                f" rec={ocr_kwargs['rec_model_name']}, det={ocr_kwargs.get('det_model_name', 'auto')}, "
+                f"rec_root={ocr_kwargs.get('rec_root', '') or 'auto'}, "
+                f"rec_fp={ocr_kwargs.get('rec_model_fp', '') or 'auto'}, "
+                f"resolved_fp={ocr_kwargs.get('_resolved_model_fp', '') or 'auto'}, err={exc}. "
                 "如需离线运行，可预先下载公共模型，或设置环境变量 "
-                "EVGUARD_CNOCR_MODEL_FP / EVGUARD_CNOCR_MODEL / EVGUARD_CNOCR_ROOT。"
+                "EVGUARD_CNOCR_MODEL / EVGUARD_CNOCR_ROOT / EVGUARD_CNOCR_MODEL_FP。"
             )
             raise
     return _OCR_INSTANCE
@@ -537,8 +575,8 @@ def get_shared_ocr() -> CnOcr:
 def _get_ocr() -> CnOcr:
     return get_shared_ocr()
 
-def find_txt_ocr(txt: str, max_attempts=5, region=None, allow_scroll=False) -> bool:
-    """在屏幕区域内查找文本，找到则移动鼠标到文本中心并返回 True"""
+def find_txt_ocr(txt: str, max_attempts=5, region=None, allow_scroll=False, move=True) -> bool:
+    """在屏幕区域内查找文本，找到后可选移动鼠标到文本中心并返回 True"""
     if region is None:
         fx, fy = pyautogui.size()
         region = (0, 0, fx, fy)
@@ -558,8 +596,9 @@ def find_txt_ocr(txt: str, max_attempts=5, region=None, allow_scroll=False) -> b
                 target_height = line["position"][2][1] - line["position"][0][1]
                 x = r[0] + line["position"][0][0] + target_width // 2
                 y = r[1] + line["position"][0][1] + target_height // 2
-                human_move_to(x, y, target_size=(target_width, target_height))
-                log_message("INFO", f"找到[{txt}] 坐标=({x},{y})")
+                if move:
+                    human_move_to(x, y, target_size=(target_width, target_height))
+                log_message("INFO", f"找到[{txt}] 坐标=({x},{y}) move={move}")
                 return True
 
         attempts += 1
@@ -569,6 +608,46 @@ def find_txt_ocr(txt: str, max_attempts=5, region=None, allow_scroll=False) -> b
 
     log_message("WARNING", f"[{txt}] 未找到，尝试次数={max_attempts}")
     return False
+
+
+def locate_txt_ocr(txt: str, max_attempts=5, region=None, allow_scroll=False, log_miss=True):
+    """在屏幕区域内查找文本，返回匹配到的屏幕坐标与目标尺寸，不移动鼠标。"""
+    if region is None:
+        fx, fy = pyautogui.size()
+        region = (0, 0, fx, fy)
+        do_adjust = False
+    else:
+        do_adjust = True
+
+    ocr = _get_ocr()
+    attempts = 0
+    while attempts < max_attempts:
+        r = adjust_region(region) if do_adjust else region
+        img = pyautogui.screenshot(region=r)
+        res = ocr.ocr(img)
+        for line in res:
+            if txt in line["text"]:
+                target_width = line["position"][1][0] - line["position"][0][0]
+                target_height = line["position"][2][1] - line["position"][0][1]
+                x = r[0] + line["position"][0][0] + target_width // 2
+                y = r[1] + line["position"][0][1] + target_height // 2
+                log_message("INFO", f"定位[{txt}] 坐标=({x},{y})")
+                return {
+                    "text": line["text"],
+                    "x": x,
+                    "y": y,
+                    "target_size": (target_width, target_height),
+                    "region": r,
+                }
+
+        attempts += 1
+        if allow_scroll:
+            scrollscreen()
+        time.sleep(0.3)
+
+    if log_miss:
+        log_message("WARNING", f"[{txt}] 未定位到，尝试次数={max_attempts}")
+    return None
 
 def find_txt_ocr2(prefix_txt: str, max_attempts=5, region=None, allow_scroll=True) -> Optional[str]:
     """
@@ -625,6 +704,24 @@ def find_txt_ocr3(txt: str, max_attempts=1, region=None) -> int:
             log_message("INFO", f"识别到 {count} 个 [{txt}]")
         return count
     return 0
+
+
+def dump_ocr_texts(region=None, tag: str = "OCR") -> str:
+    if region is None:
+        fx, fy = pyautogui.size()
+        region = (0, 0, fx, fy)
+        do_adjust = False
+    else:
+        do_adjust = True
+
+    ocr = _get_ocr()
+    r = adjust_region(region) if do_adjust else region
+    img = pyautogui.screenshot(region=r)
+    res = ocr.ocr(img)
+    texts = [line["text"] for line in res if line.get("text")]
+    joined = " | ".join(texts)
+    log_message("INFO", f"{tag} OCR={joined}" if joined else f"{tag} OCR=<empty>")
+    return joined
 
 
 # =========================
@@ -971,6 +1068,7 @@ def safe_find_icon(
         threshold: Optional[float] = None,
         cnn_threshold: Optional[float] = None,
         move: bool = True,
+        miss_delay_sec: float = 1.0,
 ) -> bool:
     """
     多次尝试封装：模板匹配 + CNN 验证
@@ -1030,9 +1128,52 @@ def safe_find_icon(
         if allow_scroll:
             scrollscreen()
         else:
-            time.sleep(1)
+            if miss_delay_sec > 0:
+                time.sleep(miss_delay_sec)
 
     log_message("WARNING", f"未找到[{icon}] attempts={max_attempts}")
+    return False
+
+
+def safe_find_any_icon(
+        icons,
+        region=None,
+        max_attempts: int = 1,
+        action: str = "leftclick",
+        offset_x: int = 0,
+        offset_y: int = 0,
+        cfg: Optional[CnnConfig] = None,
+        allow_scroll: bool = False,
+        threshold: Optional[float] = None,
+        cnn_threshold: Optional[float] = None,
+        move: bool = True,
+        miss_delay_sec: float = 1.0,
+) -> bool:
+    if isinstance(icons, str):
+        icons = [icons]
+
+    icon_list = [icon for icon in icons if icon]
+    if not icon_list:
+        return False
+
+    for icon in icon_list:
+        if safe_find_icon(
+            icon=icon,
+            region=region,
+            max_attempts=max_attempts,
+            action=action,
+            offset_x=offset_x,
+            offset_y=offset_y,
+            cfg=cfg,
+            allow_scroll=allow_scroll,
+            threshold=threshold,
+            cnn_threshold=cnn_threshold,
+            move=move,
+            miss_delay_sec=miss_delay_sec,
+        ):
+            return True
+
+    log_message("WARNING", f"未找到同义图标组[{', '.join(icon_list)}] attempts={max_attempts}")
     return False
 
 # 屏幕区域配置
@@ -1067,14 +1208,14 @@ def rolljump(max_attempts=0):
             log_message("INFO", "已到达目的地")
             return 0  # 程序停止
         
-        if safe_find_icon("jump3", region_full_right, max_attempts=1):
+        if safe_find_any_icon(["jump3", "jump3s"], region_full_right, max_attempts=1, miss_delay_sec=0.0):
             log_message("INFO", "找到jump3，退出rolljump")
             return True 
         else:
-            safe_find_icon("jump1", region_full_right, max_attempts=1)
-            safe_find_icon("jump2", region_full_right, max_attempts=1)          
+            safe_find_any_icon(["jump1", "jump1s"], region_full_right, max_attempts=1, miss_delay_sec=0.0)
+            safe_find_any_icon(["jump2", "jump2s"], region_full_right, max_attempts=1, miss_delay_sec=0.0)
             log_message("INFO", f"rolljump,循环跳跃星门:{attempts}")
-        time.sleep(2)
+        time.sleep(0.6)
         attempts += 1
     log_message("ERROR", f"rolljump达到最大尝试次数: {max_attempts}", screenshot=True)
     return False  # 返回特殊状态
@@ -1089,13 +1230,13 @@ def rolljump2(max_attempts=0):
     while max_attempts == 0 or attempts < max_attempts:
 
         # 先找jump3
-        if safe_find_icon("jump3", region_full_right, max_attempts=1,offset_x=0,offset_y=0):
+        if safe_find_any_icon(["jump3", "jump3s"], region_full_right, max_attempts=1, offset_x=0, offset_y=0):
             log_message("INFO", "找到jump3，退出rolljump2")
             return True
         
         # 找不到jump3，则找jump1
         log_message("INFO", "未找到jump3，尝试查找jump1")
-        if safe_find_icon("jump1", region_full_right, max_attempts=1):
+        if safe_find_any_icon(["jump1", "jump1s"], region_full_right, max_attempts=1):
             log_message("INFO", "找到jump1")
             time.sleep(1)
             # 找warp1
@@ -1108,7 +1249,7 @@ def rolljump2(max_attempts=0):
                 time.sleep(1)
                 # 再点击jump2
                 log_message("INFO", "查找并点击jump2")
-                if safe_find_icon("jump2", region_full_right, max_attempts=3,threshold=0.9,cnn_threshold=0.85):
+                if safe_find_any_icon(["jump2", "jump2s"], region_full_right, max_attempts=3, threshold=0.9, cnn_threshold=0.85):
                     log_message("INFO", "找到并点击jump2，等待10秒")
                     time.sleep(10)
             else:
