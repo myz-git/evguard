@@ -50,8 +50,53 @@ def resource_path(rel_path: str) -> str:
 
     return os.path.join(base, rel_path)
 
+
+def load_image_cv(path: str, flags=cv2.IMREAD_COLOR):
+    """
+    Robust OpenCV image loading for Windows paths that may contain non-ASCII characters.
+    """
+    if not os.path.exists(path):
+        return None
+
+    try:
+        data = np.fromfile(path, dtype=np.uint8)
+        if data.size == 0:
+            return None
+        return cv2.imdecode(data, flags)
+    except Exception:
+        try:
+            return cv2.imread(path, flags)
+        except Exception:
+            return None
+
+
+def save_image_cv(path: str, image) -> bool:
+    """
+    Robust OpenCV image saving for Windows paths that may contain non-ASCII characters.
+    """
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    try:
+        ext = os.path.splitext(path)[1] or ".png"
+        ok, encoded = cv2.imencode(ext, image)
+        if not ok:
+            return False
+        encoded.tofile(path)
+        return True
+    except Exception:
+        try:
+            return bool(cv2.imwrite(path, image))
+        except Exception:
+            return False
+
 ICON_DIR = resource_path("icon")
 MODEL_DIR = resource_path("model_cnn")
+LOCAL_CNOCR_MODEL_DIRNAME = "scene-densenet_lite_246-gru_base"
+LOCAL_CNOCR_MODEL_NAME = "scene-densenet_lite_246-gru_base"
+DEFAULT_CNOCR_MODEL_NAME = "scene-densenet_lite_136-gru"
+DEFAULT_CNOCR_DET_MODEL_NAME = "naive_det"
 
 # =========================
 # 日志 & 调试截图
@@ -419,11 +464,78 @@ def hscrollscreen():
 # =========================
 _OCR_INSTANCE: Optional[CnOcr] = None
 
-def _get_ocr() -> CnOcr:
+def _find_local_cnocr_model_fp() -> Optional[str]:
+    model_dir = resource_path(LOCAL_CNOCR_MODEL_DIRNAME)
+    if not os.path.isdir(model_dir):
+        return None
+
+    for ext in (".onnx", ".ckpt"):
+        candidates = [
+            os.path.join(model_dir, name)
+            for name in sorted(os.listdir(model_dir))
+            if name.lower().endswith(ext)
+        ]
+        if candidates:
+            return candidates[0]
+    return None
+
+
+def _resolve_cnocr_kwargs() -> Dict[str, str]:
+    rec_model_name = os.environ.get("EVGUARD_CNOCR_MODEL", "").strip()
+    det_model_name = os.environ.get("EVGUARD_CNOCR_DET_MODEL", DEFAULT_CNOCR_DET_MODEL_NAME).strip() or DEFAULT_CNOCR_DET_MODEL_NAME
+
+    kwargs: Dict[str, str] = {
+        "det_model_name": det_model_name,
+    }
+
+    rec_model_fp = os.environ.get("EVGUARD_CNOCR_MODEL_FP", "").strip()
+    if not rec_model_fp:
+        rec_model_fp = _find_local_cnocr_model_fp() or ""
+
+    if rec_model_fp:
+        kwargs["rec_model_name"] = rec_model_name or LOCAL_CNOCR_MODEL_NAME
+        kwargs["rec_model_fp"] = rec_model_fp
+        kwargs["rec_model_backend"] = "onnx" if rec_model_fp.lower().endswith(".onnx") else "pytorch"
+    else:
+        kwargs["rec_model_name"] = rec_model_name or DEFAULT_CNOCR_MODEL_NAME
+
+    rec_root = os.environ.get("EVGUARD_CNOCR_ROOT", "").strip()
+    if rec_root:
+        kwargs["rec_root"] = rec_root
+
+    det_root = os.environ.get("EVGUARD_CNOCR_DET_ROOT", "").strip()
+    if det_root:
+        kwargs["det_root"] = det_root
+
+    return kwargs
+
+
+def get_shared_ocr() -> CnOcr:
     global _OCR_INSTANCE
     if _OCR_INSTANCE is None:
-        _OCR_INSTANCE = CnOcr(rec_model_name="scene-densenet_lite_246-gru_base")
+        ocr_kwargs = _resolve_cnocr_kwargs()
+        try:
+            log_message(
+                "INFO",
+                f"初始化OCR模型: rec={ocr_kwargs['rec_model_name']}, det={ocr_kwargs['det_model_name']}, "
+                f"rec_fp={ocr_kwargs.get('rec_model_fp', '') or 'auto'}",
+            )
+            _OCR_INSTANCE = CnOcr(**ocr_kwargs)
+        except Exception as exc:
+            log_message(
+                "ERROR",
+                "OCR模型初始化失败。"
+                f" rec={ocr_kwargs['rec_model_name']}, det={ocr_kwargs['det_model_name']}, "
+                f"rec_fp={ocr_kwargs.get('rec_model_fp', '') or 'auto'}, err={exc}. "
+                "如需离线运行，可预先下载公共模型，或设置环境变量 "
+                "EVGUARD_CNOCR_MODEL_FP / EVGUARD_CNOCR_MODEL / EVGUARD_CNOCR_ROOT。"
+            )
+            raise
     return _OCR_INSTANCE
+
+
+def _get_ocr() -> CnOcr:
+    return get_shared_ocr()
 
 def find_txt_ocr(txt: str, max_attempts=5, region=None, allow_scroll=False) -> bool:
     """在屏幕区域内查找文本，找到则移动鼠标到文本中心并返回 True"""
@@ -647,7 +759,7 @@ def _find_icon_candidates_one_shot(
     details_list 每项: {'icon_name', 'match_val', 'prob', 'position': (x,y) 屏幕坐标}
     """
     template_path = os.path.join(icon_dir, f"{icon}.png")
-    template = cv2.imread(template_path, cv2.IMREAD_COLOR)
+    template = load_image_cv(template_path, cv2.IMREAD_COLOR)
     if template is None:
         raise FileNotFoundError(f"模板图像无法加载: {template_path}")
 
@@ -689,7 +801,7 @@ def _find_icon_candidates_one_shot(
         if cfg.debug_save:
             try:
                 debug_path = os.path.join(DEBUG_DIR, f"{icon}_match_{idx}_s{match_val:.3f}.png")
-                cv2.imwrite(debug_path, crop)
+                save_image_cv(debug_path, crop)
             except Exception:
                 pass
         rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)

@@ -27,12 +27,14 @@ from utils import (
     adjust_region,
     find_txt_ocr,
     find_txt_ocr3,
+    get_shared_ocr,
     screen_regions,
     ICON_DIR,
     CnnConfig,
     find_icon_count_cnn,
     find_icon_detailed_cnn,
     is_game_exefile_running,
+    save_image_cv,
 )
 
 ensure_license_or_exit()
@@ -266,7 +268,7 @@ def save_debug_image(icon_name, icon_image, match_val, model_prediction, is_corr
     status = "correct" if is_correct else "false_positive"
     filename = f"{icon_name}_{status}_match{match_val:.3f}_model{model_prediction}_{timestamp}.png"
     filepath = os.path.join(DEBUG_SAVE_DIR, filename)
-    cv2.imwrite(filepath, icon_image)
+    save_image_cv(filepath, icon_image)
     print(f"[调试] 已保存截图: {filepath}")
 
 def find_txt_ocr3_debug(txt, max_attempts=1, region=None):
@@ -274,18 +276,15 @@ def find_txt_ocr3_debug(txt, max_attempts=1, region=None):
     带调试功能的OCR文字识别
     返回: (found, all_ocr_texts)
     """
-    from cnocr import CnOcr
-    
     if region is None:
         fx, fy = pyautogui.size()
         region = (0, 0, fx, fy)
 
     attempts = 0
     all_ocr_texts = []
-    
-    while attempts < max_attempts:        
-        # 初始化OCR工具
-        ocr = CnOcr(rec_model_name='scene-densenet_lite_246-gru_base')
+    ocr = get_shared_ocr()
+
+    while attempts < max_attempts:
         screen_image = pyautogui.screenshot(region=region)
         res = ocr.ocr(screen_image)  # 使用 ocr 方法处理整个图像
         
