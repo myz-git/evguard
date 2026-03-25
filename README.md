@@ -188,6 +188,13 @@ del /q *.spec.bak 2>nul
 pyinstaller --clean  -y ev_all.spec
 ```
 
+只更新 FSD0 和 FSD10 的包(会将utils.py打如fsd中), _internal、模型目录、其他程序文件都不变
+
+```
+cd /d D:\Workspace\git\evguard
+pyinstaller -y fsd.spec
+```
+
 
 
 ### 4.2 更新git 版本
@@ -232,6 +239,66 @@ git push origin :refs/tags/v1.2.0
 ```
 git -C D:\Workspace\git\evguard checkout -- fsd0.py fsd10.py guard_common.py
 ```
+
+
+
+### 4.4 git代理问题
+
+改用 HTTPS + 配同一套代理
+先把 remote 从 SSH 改成 HTTPS
+
+```
+cd D:\Workspace\git\autochk
+git remote set-url origin https://github.com/myz-git/evguard.git
+git remote -v
+
+```
+
+把 Git 也配置成走同一个代理（按你实际端口改）
+
+```
+如果是 HTTP 代理（常见 7890）
+git config --global http.proxy  http://127.0.0.1:7890
+git config --global https.proxy http://127.0.0.1:7890
+如果是 SOCKS5 代理（常见 1080）
+git config --global http.proxy  socks5h://127.0.0.1:7890
+git config --global https.proxy socks5h://127.0.0.1:7890
+
+
+(base) PS D:\Workspace\git\autochk> git remote -v
+origin  https://github.com/myz-git/autochk.git (fetch)
+origin  https://github.com/myz-git/autochk.git (push)
+```
+
+再推送
+
+```
+git push
+这时会弹窗登录
+
+```
+
+查看当前 Git 代理
+
+```
+git config --global --get http.proxy
+git config --global --get https.proxy
+
+(base) PS D:\Workspace\git\autochk> git config --global --get http.proxy
+http://127.0.0.1:7890
+(base) PS D:\Workspace\git\autochk> git config --global --get https.proxy
+http://127.0.0.1:7890
+```
+
+如果你哪天换网络（不需要代理了）导致访问变慢/失败，可以一键取消：
+
+```
+git config --global --unset http.proxy
+git config --global --unset https.proxy
+
+```
+
+
 
 
 
@@ -326,3 +393,12 @@ self.manager.log(...)：会进 UI 控制台
 _set_status_message(...)：不会进 UI 控制台，只进底部状态栏
 messagebox.show...(...)：不会进 UI 控制台，只弹窗
 About 窗口内容：不会进 UI 控制台
+
+## 其他
+
+修改音量
+
+```
+ffmpeg -i faction.wav -filter:a "volume=0.7" faction_small.wav
+```
+

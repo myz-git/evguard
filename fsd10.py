@@ -4,11 +4,11 @@ from pynput import keyboard
 import sys
 import logging
 from license_utils import ensure_license_or_exit
-from utils import play_sound_wav, log_message, print_startup, safe_find_icon, safe_find_any_icon, hscrollscreen, rolljump2, screen_regions, find_txt_ocr, dump_ocr_texts, speak, suppress_not_found_warnings_console, is_game_exefile_running
+from utils import play_sound_wav, log_message, print_startup, safe_find_icon, safe_find_any_icon, hscrollscreen, rolljump2, screen_regions, find_txt_ocr, dump_ocr_texts, speak, suppress_not_found_warnings_console, is_game_exefile_running, log_screen_region_layout, ROLLJUMP_ARRIVED, get_jump_icon_template_threshold
 
 ensure_license_or_exit()
 
-# fsd10 执行时不向控制台输出「未找到」类 WARNING（仍写 task.log）
+# fsd10 执行时不向控制台输出「未找到」类 WARNING（仍写 evguard.log）
 suppress_not_found_warnings_console()
 
 ########################################################
@@ -45,6 +45,7 @@ def main():
     # 屏幕区域配置
     region_full_right = screen_regions['full_right_panel']
     mid_left_panel = screen_regions['mid_left_panel']
+    jump_threshold = get_jump_icon_template_threshold()
 
     ctr = keyboard.Controller()
     state = "set_destination"
@@ -55,6 +56,7 @@ def main():
         print("游戏未启动, 请先启动游戏")
         return 1
     print("游戏检测中...请稍后...")
+    log_screen_region_layout("FSD10区域布局", ["mid_left_panel", "control_panel", "full_right_panel"])
     # 只在循环第一次执行时播放一次启动音效
     played_start_sound = False
     while running:
@@ -94,7 +96,7 @@ def main():
             ]
 
             if any(
-                safe_find_icon(name, region_full_right, max_attempts=attempts)
+                safe_find_icon(name, region_full_right, max_attempts=attempts, threshold=jump_threshold)
                 for name, attempts in gate_icons
             ):
                 log_message("INFO", "找到跳跃门，切换到warp状态", screenshot=False)
@@ -113,18 +115,18 @@ def main():
 
         elif state == "warp":
             # 先找jump3
-            if safe_find_any_icon(["jump3", "jump3s"], region_full_right, max_attempts=1):
+            if safe_find_any_icon(["jump3", "jump3s"], region_full_right, max_attempts=1, threshold=jump_threshold):
                 log_message("INFO", "找到jump3，切换到check_dock状态", screenshot=False)
                 state = "check_dock"
             else:
                 # 找不到jump3，使用rolljump2
                 result = rolljump2()
-                if result == 0:  # 到达目的地
+                if result == ROLLJUMP_ARRIVED:
                     log_message("INFO", "已到达目的地,程序停止", screenshot=True)
                     logging.info("已到达目的地,程序停止")
                     print("已到达目的地，运行结束") 
                     return 0
-                elif result:  # 找到jump3
+                elif result is True:  # 找到jump3
                     log_message("INFO", "rolljump2成功，切换到check_dock状态", screenshot=False)
                     logging.info("rolljump2成功，切换到check_dock状态")
                     state = "check_dock"
@@ -135,7 +137,7 @@ def main():
             # if safe_find_icon("out1", region_full_right, max_attempts=30,threshold=0.7, cnn_threshold=0.60, action=None):
             while running:
                 # speak("已切换到check_dock状态,等待完成停靠")
-                if find_txt_ocr("离站", max_attempts=1, region=region_full_right) or safe_find_icon("out1", region_full_right, max_attempts=1, move=False, action="none"):
+                if find_txt_ocr("离站", max_attempts=1, region=region_full_right, log_miss=False) or safe_find_icon("out1", region_full_right, max_attempts=1, move=False, action="none"):
                     log_message("INFO", "空间站已停靠，运行结束", screenshot=False)
                     logging.info("空间站已停靠，运行结束")
                     print("已到达目的地，运行结束")

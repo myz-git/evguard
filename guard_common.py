@@ -36,6 +36,7 @@ from utils import (
     find_icon_detailed_cnn,
     is_game_exefile_running,
     save_image_cv,
+    log_screen_region_layout,
 )
 
 ensure_license_or_exit()
@@ -51,7 +52,7 @@ MODE_C_LOWSEC_ACTIVE = 'C'
 TARGET_INTERVAL_MIN_SEC = 3.0
 TARGET_INTERVAL_MAX_SEC = 5.0
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CFG_FILE = os.path.join(BASE_DIR, "cfg.txt")
+CFG_FILE = os.path.join(BASE_DIR, "evguard.cfg")
 DEFAULT_RUNTIME_CFG = {
     "location_hotkey": "l",
     "dscan_enabled": False,
@@ -60,6 +61,14 @@ DEFAULT_RUNTIME_CFG = {
     "deep_safe_b": "PIN888",
     "alarm_volume": "mid",
     "alarm_sound": "static/soundmid.wav",
+    "general_template_threshold": 0.86,
+    "general_cnn_threshold": 0.9,
+    "zhongli_template_threshold": 0.86,
+    "zhongli_cnn_threshold": 0.9,
+    "suspect_template_threshold": 0.86,
+    "suspect_cnn_threshold": 0.95,
+    "didui_template_threshold": 0.9,
+    "didui_cnn_threshold": 0.95,
 }
 
 
@@ -87,11 +96,26 @@ def load_runtime_cfg():
     except Exception:
         return cfg
 
+    def _get_float(name):
+        default = float(DEFAULT_RUNTIME_CFG[name])
+        try:
+            return float(cfg.get(name, default))
+        except (TypeError, ValueError):
+            return default
+
     cfg["location_hotkey"] = str(cfg.get("location_hotkey", DEFAULT_RUNTIME_CFG["location_hotkey"])).strip().lower() or DEFAULT_RUNTIME_CFG["location_hotkey"]
     cfg["dscan_enabled"] = str(cfg.get("dscan_enabled", DEFAULT_RUNTIME_CFG["dscan_enabled"])).strip().lower() in {"1", "true", "yes", "on"}
     cfg["dscan_hotkey"] = str(cfg.get("dscan_hotkey", cfg.get("scankey", DEFAULT_RUNTIME_CFG["dscan_hotkey"]))).strip().lower() or DEFAULT_RUNTIME_CFG["dscan_hotkey"]
     cfg["deep_safe_a"] = str(cfg.get("deep_safe_a", DEFAULT_RUNTIME_CFG["deep_safe_a"])).strip() or DEFAULT_RUNTIME_CFG["deep_safe_a"]
     cfg["deep_safe_b"] = str(cfg.get("deep_safe_b", DEFAULT_RUNTIME_CFG["deep_safe_b"])).strip() or DEFAULT_RUNTIME_CFG["deep_safe_b"]
+    cfg["general_template_threshold"] = _get_float("general_template_threshold")
+    cfg["general_cnn_threshold"] = _get_float("general_cnn_threshold")
+    cfg["zhongli_template_threshold"] = _get_float("zhongli_template_threshold")
+    cfg["zhongli_cnn_threshold"] = _get_float("zhongli_cnn_threshold")
+    cfg["suspect_template_threshold"] = _get_float("suspect_template_threshold")
+    cfg["suspect_cnn_threshold"] = _get_float("suspect_cnn_threshold")
+    cfg["didui_template_threshold"] = _get_float("didui_template_threshold")
+    cfg["didui_cnn_threshold"] = _get_float("didui_cnn_threshold")
     volume = str(cfg.get("alarm_volume", DEFAULT_RUNTIME_CFG["alarm_volume"])).strip().lower()
     sound_map = {
         "high": "static/soundhigh.wav",
@@ -134,21 +158,36 @@ ctrl_pressed = False
 # 调试模式：是否保存误识别截图
 DEBUG_MODE = False
 DEBUG_SAVE_DIR = "debug_icons"
-# 警告阈值：匹配值超过此值但未通过验证时显示警告（0.7表示70%相似度）
-WARNING_THRESHOLD = 0.75
+
+#一般模板匹配阈值
 GENERAL_TEMPLATE_THRESHOLD = 0.86
-GENERAL_CNN_THRESHOLD = 0.95
-SUSPECT_TEMPLATE_THRESHOLD = 0.88
-SUSPECT_CNN_THRESHOLD = 0.95
-ICON_CONFIRM_DELAY_SEC = 0.5
+#中立模板匹配阈值
+# ZHONGLI_TEMPLATE_THRESHOLD = 0.70
+#罪犯/嫌犯模板匹配阈值
+SUSPECT_TEMPLATE_THRESHOLD = 0.86
+#敌对模板匹配阈值
+DIDUI_TEMPLATE_THRESHOLD = 0.9
+
+ICON_CONFIRM_DELAY_SEC = 0.3
+
+_IMPORT_RUNTIME_CFG = load_runtime_cfg()
+GENERAL_TEMPLATE_THRESHOLD = _IMPORT_RUNTIME_CFG["general_template_threshold"]
+GENERAL_CNN_THRESHOLD = _IMPORT_RUNTIME_CFG["general_cnn_threshold"]
+ZHONGLI_TEMPLATE_THRESHOLD = _IMPORT_RUNTIME_CFG["zhongli_template_threshold"]
+ZHONGLI_CNN_THRESHOLD = _IMPORT_RUNTIME_CFG["zhongli_cnn_threshold"]
+SUSPECT_TEMPLATE_THRESHOLD = _IMPORT_RUNTIME_CFG["suspect_template_threshold"]
+SUSPECT_CNN_THRESHOLD = _IMPORT_RUNTIME_CFG["suspect_cnn_threshold"]
+DIDUI_TEMPLATE_THRESHOLD = _IMPORT_RUNTIME_CFG["didui_template_threshold"]
+DIDUI_CNN_THRESHOLD = _IMPORT_RUNTIME_CFG["didui_cnn_threshold"]
 
 ICON_DETECTION_SPECS = [
     {
         "icon": "zhongli",
+        "icons": ["zhongli", "zhonglis"],
         "label": "中立",
         "modes": {MODE_A_LOWSEC, MODE_C_LOWSEC_ACTIVE},
-        "threshold": GENERAL_TEMPLATE_THRESHOLD,
-        "cnn_threshold": GENERAL_CNN_THRESHOLD,
+        "threshold": ZHONGLI_TEMPLATE_THRESHOLD,
+        "cnn_threshold": ZHONGLI_CNN_THRESHOLD,
     },
     {
         "icon": "zuifan",
@@ -175,13 +214,28 @@ ICON_DETECTION_SPECS = [
         "icon": "didui",
         "label": "敌对",
         "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC, MODE_C_LOWSEC_ACTIVE},
-        "threshold": 0.9,
-        "cnn_threshold": 0.95,
+        "threshold": DIDUI_TEMPLATE_THRESHOLD,
+        "cnn_threshold": DIDUI_CNN_THRESHOLD,
     },
     {
         "icon": "buliang",
         "label": "不良",
+        "modes": set(),
+        "threshold": GENERAL_TEMPLATE_THRESHOLD,
+        "cnn_threshold": GENERAL_CNN_THRESHOLD,
+    },
+    {
+        "icon": "zaogao",
+        "icons": ["zaogao", "zaogaos"],
+        "label": "糟糕",
         "modes": {MODE_A_LOWSEC, MODE_B_HIGHSEC, MODE_C_LOWSEC_ACTIVE},
+        "threshold": GENERAL_TEMPLATE_THRESHOLD,
+        "cnn_threshold": GENERAL_CNN_THRESHOLD,
+    },
+    {
+        "icon": "wuwei",
+        "label": "鏃犵晱",
+        "modes": {MODE_A_LOWSEC, MODE_C_LOWSEC_ACTIVE},
         "threshold": GENERAL_TEMPLATE_THRESHOLD,
         "cnn_threshold": GENERAL_CNN_THRESHOLD,
     },
@@ -200,15 +254,20 @@ def _detect_icons_once(mode, region, screen, cfg):
             dedup_ratio=cfg.dedup_ratio,
             debug_save=cfg.debug_save,
         )
-        count, details_list = find_icon_count_cnn(
-            spec["icon"],
-            max_attempts=1,
-            region=region,
-            screen=screen,
-            cfg=icon_cfg,
-            threshold=spec.get("threshold"),
-            cnn_threshold=spec.get("cnn_threshold"),
-        )
+        count = 0
+        details_list = []
+        for icon_name in spec.get("icons", [spec["icon"]]):
+            icon_count, icon_details = find_icon_count_cnn(
+                icon_name,
+                max_attempts=1,
+                region=region,
+                screen=screen,
+                cfg=icon_cfg,
+                threshold=spec.get("threshold"),
+                cnn_threshold=spec.get("cnn_threshold"),
+            )
+            count += icon_count
+            details_list.extend(icon_details)
         if count > 0:
             hits.append({"spec": spec, "count": count, "details": details_list})
     return hits
@@ -344,6 +403,7 @@ def main(mode=MODE_A_LOWSEC):
         print("游戏未启动, 请先启动游戏")
         return 1
     print("游戏检测中...请稍后...")
+    log_screen_region_layout(f"{app_name}区域布局", ["left_panel", "center_panel", "center_panel2", "right_panel"])
     played_start_sound = False
     while running:
         if not played_start_sound:
@@ -366,7 +426,7 @@ def main(mode=MODE_A_LOWSEC):
             # if mode in {MODE_B_HIGHSEC, MODE_C_LOWSEC_ACTIVE}:
             # if mode in {MODE_B_HIGHSEC}:
             if mode == MODE_B_HIGHSEC and runtime_cfg.get("dscan_enabled", DEFAULT_RUNTIME_CFG["dscan_enabled"]):
-                # 通过 cfg.txt 配置 D-SCAN 触发方式。
+                # 通过 evguard.cfg 配置 D-SCAN 触发方式。
                 trigger_dscan(runtime_cfg.get("dscan_hotkey"))
                 print("雷达扫描中...")
                 
@@ -399,12 +459,20 @@ def main(mode=MODE_A_LOWSEC):
 
             # 文字识别：「促进」。仅 B 模式检测，A/C 模式不检测促进
             if mode == MODE_B_HIGHSEC:
-                txt_count = find_txt_ocr3("促进", 1, right_panel)
-                txt_found = txt_count >= 2
+                suspect_txt_count = find_txt_ocr3("促进", 1, right_panel)
+                suspect_txt_found = suspect_txt_count >= 2
             else:
-                txt_count = 0
-                txt_found = False
+                suspect_txt_count = 0
+                suspect_txt_found = False
+            if mode in {MODE_A_LOWSEC, MODE_C_LOWSEC_ACTIVE}:
+                wuwei_txt_count = find_txt_ocr3("无畏", 1, right_panel)
+                wuwei_txt_found = wuwei_txt_count >= 1
+            else:
+                wuwei_txt_count = 0
+                wuwei_txt_found = False
 
+            txt_count = suspect_txt_count + wuwei_txt_count
+            txt_found = suspect_txt_found or wuwei_txt_found
             total_danger_count = total_icon_count + txt_count
 
             # 任一触发则声音告警
@@ -416,8 +484,10 @@ def main(mode=MODE_A_LOWSEC):
                         icon_summary[name] = icon_summary.get(name, 0) + 1
                     parts = [f"{c}个 {n}单位" for n, c in icon_summary.items()]
                     print(f"[警报] 发现: {'、'.join(parts)}")
-                if txt_found:
-                    print(f"[警报] 发现 {txt_count} 个可疑舰船")
+                if suspect_txt_found:
+                    print(f"[警报] 发现 {suspect_txt_count} 个可疑舰船")
+                if wuwei_txt_found:
+                    print(f"[警报] 识别到 {wuwei_txt_count} 处无畏文字")
 
             # B模式：达到 2 个及以上危险项时紧急规避
             if mode == MODE_B_HIGHSEC and total_danger_count >= 2:
@@ -428,22 +498,33 @@ def main(mode=MODE_A_LOWSEC):
                         icon_summary[name] = icon_summary.get(name, 0) + 1
                     icon_str = ', '.join([f"{name}{count}个" if count > 1 else name for name, count in icon_summary.items()])
                     danger_items.append(f"图标{icon_str}(共{total_icon_count}个)")
-                if txt_count > 0:
-                    danger_items.append(f"可疑舰船{txt_count}个")
+                if suspect_txt_count > 0:
+                    danger_items.append(f"可疑舰船{suspect_txt_count}个")
                 reason = f"发现{'、'.join(danger_items)}"
                 #emergency_evasion(reason)
+                speak("紧急规避,3秒后启动")
+                print("紧急规避,3秒后启动")
+                time.sleep(3)
                 emergency_evade_pin999(
                     center_panel2,
                     open_key=runtime_cfg.get("location_hotkey", DEFAULT_RUNTIME_CFG["location_hotkey"]),
                     pin_text=runtime_cfg.get("deep_safe_a", DEFAULT_RUNTIME_CFG["deep_safe_a"]),
                     backup_pin_text=runtime_cfg.get("deep_safe_b", DEFAULT_RUNTIME_CFG["deep_safe_b"]),
                 )
-            elif mode == MODE_C_LOWSEC_ACTIVE and total_icon_count >= 1:
-                icon_summary = {}
-                for name, _ in icon_details_summary:
-                    icon_summary[name] = icon_summary.get(name, 0) + 1
-                icon_str = ', '.join([f"{name}{count}个" if count > 1 else name for name, count in icon_summary.items()])
-                reason = f"发现图标{icon_str}(共{total_icon_count}个)"
+            elif mode == MODE_C_LOWSEC_ACTIVE and (total_icon_count >= 1 or wuwei_txt_found):
+                danger_items = []
+                if total_icon_count > 0:
+                    icon_summary = {}
+                    for name, _ in icon_details_summary:
+                        icon_summary[name] = icon_summary.get(name, 0) + 1
+                    icon_str = ', '.join([f"{name}{count}个" if count > 1 else name for name, count in icon_summary.items()])
+                    danger_items.append(f"图标{icon_str}(共{total_icon_count}个)")
+                if wuwei_txt_found:
+                    danger_items.append(f"无畏文字{wuwei_txt_count}处")
+                reason = f"发现{'、'.join(danger_items)}"
+                speak("紧急规避,3秒后启动")
+                print("紧急规避,3秒后启动")
+                time.sleep(3)
                 emergency_evade_pin999(
                     center_panel2,
                     open_key=runtime_cfg.get("location_hotkey", DEFAULT_RUNTIME_CFG["location_hotkey"]),
@@ -489,8 +570,7 @@ def emergency_evade_pin999(
       - pyautogui
       - time, sys
     """
-    speak("紧急规避,发现可疑舰船")
-    print("紧急规避,发现可疑舰船")
+
 
     # 1) 先聚焦屏幕中部，再打开地点面板
     screen_width, screen_height = pyautogui.size()

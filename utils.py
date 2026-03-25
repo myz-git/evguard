@@ -109,6 +109,10 @@ _SHARED_UI_LOG_PREFIX = os.environ.get("EVGUARD_UI_LOG_PREFIX", "").strip()
 _SHARED_UI_LOG_LOCK = threading.RLock()
 _LAST_MOUSE_TARGET_SIZE: Optional[Tuple[int, int]] = None
 _HUMAN_MOUSE = HumanMouse(human_factor=0.9, default_duration=0.12, default_offset=3)
+APP_LOG_FILE = os.path.join(
+    os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.abspath(os.path.dirname(__file__)),
+    "evguard.log",
+)
 
 
 def random_mouse_click_interval_sec() -> float:
@@ -300,10 +304,10 @@ logging.getLogger("cnstd").setLevel(logging.ERROR)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler("task.log", mode="a", encoding="utf-8"), logging.StreamHandler()],
+    handlers=[logging.FileHandler(APP_LOG_FILE, mode="a", encoding="utf-8"), logging.StreamHandler()],
     force=True,
 )
-# INFO 只写 task.log，不输出到终端；终端仅显示 WARNING 及以上
+# INFO 只写 evguard.log，不输出到终端；终端仅显示 WARNING 及以上
 root = logging.getLogger()
 for h in root.handlers:
     if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
@@ -381,7 +385,7 @@ def log_message(level: str, message: str, screenshot: bool = False, script_name:
     except Exception:
         pass
 
-    # flush 所有 handler，确保 task.log 等文件即时落盘
+    # flush 所有 handler，确保 evguard.log 等文件即时落盘
     for h in logging.getLogger().handlers:
         try:
             h.flush()
@@ -408,16 +412,109 @@ class TextNotFoundException(Exception):
 # =========================
 # 分辨率缩放
 # =========================
-def adjust_region(region: Tuple[int, int, int, int], base_resolution=(1920, 1080)):
-    """根据当前屏幕分辨率缩放 ROI（以 1920x1080 为基准）"""
-    current_width, current_height = pyautogui.size()
+BASE_RESOLUTION = (1920, 1080)
+REGION_COORD_MODE_BASE = "base_1920x1080"
+REGION_COORD_MODE_CURRENT = "current"
+
+
+def _scale_by_height(value: float, scale_y: float) -> int:
+    return int(round(value * scale_y))
+
+
+def _clamp_region_to_screen(region: Tuple[int, int, int, int], screen_size: Tuple[int, int]) -> Tuple[int, int, int, int]:
+    screen_width, screen_height = screen_size
+    x, y, w, h = region
+    x = max(0, min(int(x), screen_width - 1))
+    y = max(0, min(int(y), screen_height - 1))
+    w = max(1, min(int(w), screen_width - x))
+    h = max(1, min(int(h), screen_height - y))
+    return (x, y, w, h)
+
+
+def get_screen_aspect_ratio() -> float:
+    screen_width, screen_height = pyautogui.size()
+    if screen_height <= 0:
+        return 16 / 9
+    return screen_width / float(screen_height)
+
+
+def is_ultrawide_screen() -> bool:
+    return get_screen_aspect_ratio() >= 2.2
+
+
+def get_jump_icon_template_threshold(default: float = 0.8) -> float:
+    return 0.7 if is_ultrawide_screen() else default
+
+
+def _looks_like_current_resolution_region(
+    region: Tuple[int, int, int, int],
+    current_size: Tuple[int, int],
+    base_resolution: Tuple[int, int],
+) -> bool:
+    current_width, current_height = current_size
     base_width, base_height = base_resolution
     x, y, w, h = region
-    x = int(x * current_width / base_width)
-    y = int(y * current_height / base_height)
-    w = int(w * current_width / base_width)
-    h = int(h * current_height / base_height)
-    return (x, y, w, h)
+    if current_width == base_width and current_height == base_height:
+        return False
+    return x < 0 or y < 0 or w <= 0 or h <= 0 or (x + w) > base_width or (y + h) > base_height
+
+
+def _adjust_region_with_anchor(
+    region: Tuple[int, int, int, int],
+    anchor: str,
+    current_size: Tuple[int, int],
+    base_resolution: Tuple[int, int],
+) -> Tuple[int, int, int, int]:
+    current_width, current_height = current_size
+    base_width, base_height = base_resolution
+    scale_y = current_height / base_height
+
+    x, y, w, h = region
+    scaled_w = _scale_by_height(w, scale_y)
+    scaled_h = _scale_by_height(h, scale_y)
+    scaled_y = _scale_by_height(y, scale_y)
+
+    if anchor == "right":
+        right_margin = base_width - (x + w)
+        scaled_x = current_width - scaled_w - _scale_by_height(right_margin, scale_y)
+    elif anchor == "center":
+        base_center_x = x + (w / 2.0)
+        center_offset = base_center_x - (base_width / 2.0)
+        scaled_center_x = (current_width / 2.0) + (center_offset * scale_y)
+        scaled_x = int(round(scaled_center_x - (scaled_w / 2.0)))
+    else:
+        scaled_x = _scale_by_height(x, scale_y)
+
+    return _clamp_region_to_screen((scaled_x, scaled_y, scaled_w, scaled_h), current_size)
+
+
+def adjust_region(region: Tuple[int, int, int, int], base_resolution=BASE_RESOLUTION):
+    """根据当前屏幕分辨率调整 ROI；静态 UI 区域优先按锚点适配超宽屏。"""
+    current_size = pyautogui.size()
+    current_width, current_height = current_size
+    base_width, base_height = base_resolution
+
+    if current_width == base_width and current_height == base_height:
+        return tuple(map(int, region))
+
+    region = tuple(map(int, region))
+    if region in _ABSOLUTE_REGION_RECTS:
+        return _clamp_region_to_screen(region, current_size)
+    if _looks_like_current_resolution_region(region, current_size, base_resolution):
+        return _clamp_region_to_screen(region, current_size)
+
+    anchor = _REGION_ANCHOR_BY_RECT.get(region)
+    if anchor:
+        return _adjust_region_with_anchor(region, anchor, current_size, base_resolution)
+
+    x, y, w, h = region
+    scaled = (
+        int(round(x * current_width / base_width)),
+        int(round(y * current_height / base_height)),
+        int(round(w * current_width / base_width)),
+        int(round(h * current_height / base_height)),
+    )
+    return _clamp_region_to_screen(scaled, current_size)
 
 
 # =========================
@@ -575,7 +672,7 @@ def get_shared_ocr() -> CnOcr:
 def _get_ocr() -> CnOcr:
     return get_shared_ocr()
 
-def find_txt_ocr(txt: str, max_attempts=5, region=None, allow_scroll=False, move=True) -> bool:
+def find_txt_ocr(txt: str, max_attempts=5, region=None, allow_scroll=False, move=True, log_miss=True) -> bool:
     """在屏幕区域内查找文本，找到后可选移动鼠标到文本中心并返回 True"""
     if region is None:
         fx, fy = pyautogui.size()
@@ -606,7 +703,8 @@ def find_txt_ocr(txt: str, max_attempts=5, region=None, allow_scroll=False, move
             scrollscreen()
         time.sleep(0.3)
 
-    log_message("WARNING", f"[{txt}] 未找到，尝试次数={max_attempts}")
+    if log_miss:
+        log_message("WARNING", f"[{txt}] 未找到，尝试次数={max_attempts}")
     return False
 
 
@@ -822,13 +920,17 @@ _TRANSFORM = transforms.Compose([
 
 
 _MODEL_CACHE: Dict[str, nn.Module] = {}
+_CNN_MODEL_ALIASES: Dict[str, str] = {
+    "zaogao": "zaogaos",
+}
 
 def _get_cnn_model(icon: str, model_dir=MODEL_DIR) -> nn.Module:    
     """同一个 icon 的 pth 只加载一次"""
-    if icon in _MODEL_CACHE:
-        return _MODEL_CACHE[icon]
+    model_icon = _CNN_MODEL_ALIASES.get(icon, icon)
+    if model_icon in _MODEL_CACHE:
+        return _MODEL_CACHE[model_icon]
 
-    model_path = os.path.join(model_dir, f"{icon}_classifier.pth")
+    model_path = os.path.join(model_dir, f"{model_icon}_classifier.pth")
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"模型文件不存在: {model_path}")
 
@@ -836,7 +938,7 @@ def _get_cnn_model(icon: str, model_dir=MODEL_DIR) -> nn.Module:
     state = torch.load(model_path, map_location=_DEVICE, weights_only=True)
     model.load_state_dict(state)
     model.eval()
-    _MODEL_CACHE[icon] = model
+    _MODEL_CACHE[model_icon] = model
     log_message("INFO", f"加载CNN模型...")
     return model
 
@@ -1177,43 +1279,175 @@ def safe_find_any_icon(
     return False
 
 # 屏幕区域配置
-screen_regions = {
-    'left_panel': (30, 30, 300, 800),  # 左侧面板
-    'center_panel': (300, 30, 800, 800),  # 中间面板
-    'center_panel2': (200, 30,1200, 800),  # 中间面板2
-    'right_panel': (1000, 30, 700, 1000),  # 右侧面板
-    'full_right_panel': (1380, 30, 540, 1000),
-    'upper_right_panel': (1380, 30, 540, 260),
-    'upper_left_panel': (0, 0, 400, 200),
-    'mid_left_panel': (50, 150, 500, 600),
-    'agent_panel1': (1450, 250, 500, 500),
-    'agent_panel2': (1500, 400, 400, 500),
-    'agent_panel3': (200, 100, 1400, 900),
-    'cangku_panel3': (0, 0, 1700, 850),
-    'need_goods_panel': (50, 50, 400, 500),
-    'control_panel': (500, 800, 850,230)
+_SCREEN_REGION_SPECS = {
+    'left_panel': {'rect': (30, 30, 300, 800), 'anchor': 'left'},
+    'center_panel': {'rect': (300, 30, 800, 800), 'anchor': 'center'},
+    'center_panel2': {'rect': (200, 30, 1200, 800), 'anchor': 'center'},
+    'right_panel': {'rect': (1000, 30, 700, 1050), 'anchor': 'right'},
+    'full_right_panel': {'rect': (1380, 10, 540, 1000), 'anchor': 'right'},
+    'upper_right_panel': {'rect': (1380, 10, 540, 260), 'anchor': 'right'},
+    'upper_left_panel': {'rect': (0, 0, 400, 200), 'anchor': 'left'},
+    'mid_left_panel': {'rect': (50, 150, 500, 600), 'anchor': 'left'},
+    'agent_panel1': {'rect': (1450, 250, 500, 500), 'anchor': 'right'},
+    'agent_panel2': {'rect': (1500, 400, 400, 500), 'anchor': 'right'},
+    'agent_panel3': {'rect': (200, 100, 1400, 900), 'anchor': 'center'},
+    'cangku_panel3': {'rect': (0, 0, 1700, 850), 'anchor': 'center'},
+    'need_goods_panel': {'rect': (50, 50, 400, 500), 'anchor': 'left'},
+    'control_panel': {'rect': (500, 800, 850, 230), 'anchor': 'center'},
 }
+
+screen_regions = {name: spec['rect'] for name, spec in _SCREEN_REGION_SPECS.items()}
+_REGION_ANCHOR_BY_RECT = {
+    spec['rect']: spec['anchor']
+    for spec in _SCREEN_REGION_SPECS.values()
+}
+_ABSOLUTE_REGION_RECTS = set()
+_SUPPORTED_REGION_CFG_TAGS = {"1920x1080", "3440x1440"}
+
+
+def _parse_region_rect(value: str) -> Optional[Tuple[int, int, int, int]]:
+    try:
+        parts = [int(part.strip()) for part in str(value).split(",")]
+    except Exception:
+        return None
+    if len(parts) != 4:
+        return None
+    x, y, w, h = parts
+    if w <= 0 or h <= 0:
+        return None
+    return (x, y, w, h)
+
+
+def _parse_cfg_region_key(key: str) -> Tuple[Optional[str], Optional[str]]:
+    normalized = key.strip().lower()
+    if not normalized.startswith("region_"):
+        return (None, None)
+
+    body = normalized[len("region_"):]
+    for cfg_tag in _SUPPORTED_REGION_CFG_TAGS:
+        prefix = f"{cfg_tag}_"
+        if body.startswith(prefix):
+            return (cfg_tag, body[len(prefix):])
+    return (None, body)
+
+
+def _get_cfg_file_path() -> str:
+    return resource_path("evguard.cfg")
+
+
+def apply_screen_region_overrides(cfg_path: Optional[str] = None) -> None:
+    global screen_regions, _ABSOLUTE_REGION_RECTS
+    cfg_file = cfg_path or _get_cfg_file_path()
+    _ABSOLUTE_REGION_RECTS = set()
+    if not os.path.exists(cfg_file):
+        return
+
+    try:
+        coord_mode = REGION_COORD_MODE_BASE
+        legacy_regions = []
+        tagged_regions: Dict[str, List[Tuple[str, Tuple[int, int, int, int]]]] = {}
+        current_width, current_height = pyautogui.size()
+        current_cfg_tag = f"{current_width}x{current_height}"
+        fallback_cfg_tag = "1920x1080"
+        with open(cfg_file, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip().lower()
+                value = value.strip()
+                if key == "region_coord_mode":
+                    normalized_mode = value.lower()
+                    if normalized_mode in {REGION_COORD_MODE_BASE, REGION_COORD_MODE_CURRENT}:
+                        coord_mode = normalized_mode
+                    continue
+                cfg_tag, region_name = _parse_cfg_region_key(key)
+                if not region_name:
+                    continue
+                if region_name not in screen_regions:
+                    continue
+                rect = _parse_region_rect(value)
+                if not rect:
+                    continue
+                if cfg_tag:
+                    tagged_regions.setdefault(cfg_tag, []).append((region_name, rect))
+                else:
+                    legacy_regions.append((region_name, rect))
+
+        for region_name, rect in legacy_regions:
+            screen_regions[region_name] = rect
+            if coord_mode == REGION_COORD_MODE_CURRENT:
+                _ABSOLUTE_REGION_RECTS.add(rect)
+
+        for region_name, rect in tagged_regions.get(fallback_cfg_tag, []):
+            screen_regions[region_name] = rect
+
+        for region_name, rect in tagged_regions.get(current_cfg_tag, []):
+            screen_regions[region_name] = rect
+            _ABSOLUTE_REGION_RECTS.add(rect)
+    except Exception:
+        pass
+
+
+apply_screen_region_overrides()
+
+
+def log_screen_region_layout(tag: str = "screen_regions", region_names: Optional[List[str]] = None, echo: bool = True) -> None:
+    current_width, current_height = pyautogui.size()
+    names = region_names or [
+        "left_panel",
+        "center_panel",
+        "center_panel2",
+        "right_panel",
+        "full_right_panel",
+    ]
+    resolved_parts = []
+    for name in names:
+        rect = screen_regions.get(name)
+        if not rect:
+            continue
+        resolved = adjust_region(rect)
+        anchor = _SCREEN_REGION_SPECS.get(name, {}).get("anchor", "scale")
+        resolved_parts.append(f"{name}={resolved}<{anchor}>")
+
+    message = f"{tag}: screen={current_width}x{current_height}; " + "; ".join(resolved_parts)
+    log_message("INFO", message)
+    if echo and os.environ.get("EVGUARD_CHILD_LOG_TO_STDOUT") != "1":
+        print(message)
 
 # =========================
 # 业务相关函数
 # =========================
+ROLLJUMP_ARRIVED = "arrived"
+
+
+def is_destination_reached(mid_left_panel) -> bool:
+    """左侧面板出现目标相关文案时，视为已到达目的地。"""
+    return (
+        find_txt_ocr("跃迁至该处", max_attempts=1, region=mid_left_panel, move=False, log_miss=False)
+        or find_txt_ocr("没有目的地", max_attempts=1, region=mid_left_panel, move=False, log_miss=False)
+    )
+
+
 def rolljump(max_attempts=0):
     """循环跳跃星门"""
     region_full_right = screen_regions['full_right_panel']
     mid_left_panel = screen_regions['mid_left_panel']
+    jump_threshold = get_jump_icon_template_threshold()
     attempts = 0
     while max_attempts == 0 or attempts < max_attempts:
         # 首先检查是否到达目的地
-        if find_txt_ocr("跃迁至该处", max_attempts=1, region=mid_left_panel):
+        if is_destination_reached(mid_left_panel):
             log_message("INFO", "已到达目的地")
-            return 0  # 程序停止
+            return ROLLJUMP_ARRIVED
         
-        if safe_find_any_icon(["jump3", "jump3s"], region_full_right, max_attempts=1, miss_delay_sec=0.0):
+        if safe_find_any_icon(["jump3", "jump3s"], region_full_right, max_attempts=1, threshold=jump_threshold, miss_delay_sec=0.0):
             log_message("INFO", "找到jump3，退出rolljump")
             return True 
         else:
-            safe_find_any_icon(["jump1", "jump1s"], region_full_right, max_attempts=1, miss_delay_sec=0.0)
-            safe_find_any_icon(["jump2", "jump2s"], region_full_right, max_attempts=1, miss_delay_sec=0.0)
+            safe_find_any_icon(["jump1", "jump1s"], region_full_right, max_attempts=1, threshold=jump_threshold, miss_delay_sec=0.0)
+            safe_find_any_icon(["jump2", "jump2s"], region_full_right, max_attempts=1, threshold=jump_threshold, miss_delay_sec=0.0)
             log_message("INFO", f"rolljump,循环跳跃星门:{attempts}")
         time.sleep(0.6)
         attempts += 1
@@ -1225,18 +1459,22 @@ def rolljump2(max_attempts=0):
     region_full_right = screen_regions['full_right_panel']
     mid_left_panel = screen_regions['mid_left_panel']
     control_panel = screen_regions['control_panel']
+    jump_threshold = get_jump_icon_template_threshold()
     attempts = 0
     
     while max_attempts == 0 or attempts < max_attempts:
+        if is_destination_reached(mid_left_panel):
+            log_message("INFO", "已到达目的地")
+            return ROLLJUMP_ARRIVED
 
         # 先找jump3
-        if safe_find_any_icon(["jump3", "jump3s"], region_full_right, max_attempts=1, offset_x=0, offset_y=0):
+        if safe_find_any_icon(["jump3", "jump3s"], region_full_right, max_attempts=1, offset_x=0, offset_y=0, threshold=jump_threshold):
             log_message("INFO", "找到jump3，退出rolljump2")
             return True
         
         # 找不到jump3，则找jump1
         log_message("INFO", "未找到jump3，尝试查找jump1")
-        if safe_find_any_icon(["jump1", "jump1s"], region_full_right, max_attempts=1):
+        if safe_find_any_icon(["jump1", "jump1s"], region_full_right, max_attempts=1, threshold=jump_threshold):
             log_message("INFO", "找到jump1")
             time.sleep(1)
             # 找warp1
@@ -1249,7 +1487,7 @@ def rolljump2(max_attempts=0):
                 time.sleep(1)
                 # 再点击jump2
                 log_message("INFO", "查找并点击jump2")
-                if safe_find_any_icon(["jump2", "jump2s"], region_full_right, max_attempts=3, threshold=0.9, cnn_threshold=0.85):
+                if safe_find_any_icon(["jump2", "jump2s"], region_full_right, max_attempts=3, threshold=max(0.82, jump_threshold), cnn_threshold=0.85):
                     log_message("INFO", "找到并点击jump2，等待10秒")
                     time.sleep(10)
             else:

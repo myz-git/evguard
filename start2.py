@@ -11,7 +11,7 @@ from license_utils import get_license_info_text, get_machine_code
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_FILE = os.path.join(BASE_DIR, "evguard_log.txt")
+LOG_FILE = os.path.join(BASE_DIR, "evguard.log")
 COMMANDS_FILE = os.path.join(BASE_DIR, "commands.json")
 PROCESS_ORDER = ["Fsd0", "Fsd10", "GuardA", "GuardB"]
 DISPLAY_NAMES = {
@@ -33,7 +33,7 @@ DEFAULT_COMMANDS = {
     "GuardB": os.path.join(BASE_DIR, "dist", "FsdGuard", "GuardB.exe"),
 }
 ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-CFG_FILE = os.path.join(BASE_DIR, "cfg.txt")
+CFG_FILE = os.path.join(BASE_DIR, "evguard.cfg")
 
 
 COLORS = {

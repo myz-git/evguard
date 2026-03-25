@@ -14,6 +14,9 @@ datas = [
     (os.path.join(project_dir, "model_cnn"), "model_cnn"),
     (os.path.join(project_dir, "1.2"), "1.2"),
     (os.path.join(project_dir, "2.3"), "2.3"),
+    (os.path.join(project_dir, "evguard.cfg"), "."),
+    (os.path.join(project_dir, "1920_1080.png"), "."),
+    (os.path.join(project_dir, "3440_1440.png"), "."),
 ]
 
 

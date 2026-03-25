@@ -51,7 +51,7 @@ def play_sound_wav(file_path: str):
         pass
 
 # 日志 / 命令配置 / cfg 等运行时文件，放在 CONFIG_BASE_DIR
-LOG_FILE = os.path.join(CONFIG_BASE_DIR, "evguard_log.txt")
+LOG_FILE = os.path.join(CONFIG_BASE_DIR, "evguard.log")
 COMMANDS_FILE = os.path.join(CONFIG_BASE_DIR, "commands.json")
 PROCESS_ORDER = ["Fsd0", "Fsd10", "GuardA", "GuardB", "GuardC"]
 DISPLAY_NAMES = {
@@ -76,10 +76,7 @@ DEFAULT_COMMANDS = {
     "GuardC": os.path.join(EXEC_BASE_DIR, "GuardC.exe"),
 }
 ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-if getattr(sys, "frozen", False):
-    CFG_FILE = resource_path("cfg.txt")
-else:
-    CFG_FILE = os.path.join(BASE_DIR, "cfg.txt")
+CFG_FILE = os.path.join(CONFIG_BASE_DIR, "evguard.cfg")
 
 
 COLORS = {
@@ -1100,7 +1097,7 @@ class EvGuardApp:
                 }
             )
             self.config = save_cfg(next_config)
-            self._set_status_message("Settings saved to cfg.txt")
+            self._set_status_message("Settings saved to evguard.cfg")
             dialog.destroy()
 
         save_btn = tk.Button(footer, text="Save", command=save_settings)

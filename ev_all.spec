@@ -13,7 +13,9 @@ datas = [
     (os.path.join(project_dir, "model_cnn"), "model_cnn"),
     (os.path.join(project_dir, "1.2"), "1.2"),
     (os.path.join(project_dir, "2.3"), "2.3"),
-    (os.path.join(project_dir, "cfg.txt"), "."),
+    (os.path.join(project_dir, "evguard.cfg"), "."),
+    (os.path.join(project_dir, "1920_1080.png"), "."),
+    (os.path.join(project_dir, "3440_1440.png"), "."),
 ]
 
 # 只补 rapidocr 真实缺失的 yaml（避免全量带 rapidocr 数据）
@@ -279,7 +281,45 @@ exe_start = EXE(
     contents_directory="_internal",
 )
 
-# ========= COLLECT: 6 EXEs + shared deps/resources =========
+# ========= REGION =========
+a_region = Analysis(
+    [os.path.join(project_dir, "region.py")],
+    pathex=[project_dir],
+    binaries=[],
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=excludes,
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+pyz_region = PYZ(a_region.pure, a_region.zipped_data, cipher=block_cipher)
+
+exe_region = EXE(
+    pyz_region,
+    a_region.scripts,
+    [], [], [], [],
+    name="region",
+    icon=os.path.join(project_dir, "icon", "eva.ico"),
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    exclude_binaries=True,
+    contents_directory="_internal",
+)
+
+# ========= COLLECT: 7 EXEs + shared deps/resources =========
 coll = COLLECT(
     exe_fsd0,
     exe_fsd10,
@@ -287,9 +327,10 @@ coll = COLLECT(
     exe_gb,
     exe_gc,
     exe_start,
-    a_fsd0.binaries + a_fsd10.binaries + a_ga.binaries + a_gb.binaries + a_gc.binaries + a_start.binaries,
-    a_fsd0.zipfiles + a_fsd10.zipfiles + a_ga.zipfiles + a_gb.zipfiles + a_gc.zipfiles + a_start.zipfiles,
-    a_fsd0.datas + a_fsd10.datas + a_ga.datas + a_gb.datas + a_gc.datas + a_start.datas,
+    exe_region,
+    a_fsd0.binaries + a_fsd10.binaries + a_ga.binaries + a_gb.binaries + a_gc.binaries + a_start.binaries + a_region.binaries,
+    a_fsd0.zipfiles + a_fsd10.zipfiles + a_ga.zipfiles + a_gb.zipfiles + a_gc.zipfiles + a_start.zipfiles + a_region.zipfiles,
+    a_fsd0.datas + a_fsd10.datas + a_ga.datas + a_gb.datas + a_gc.datas + a_start.datas + a_region.datas,
     strip=False,
     upx=False,
     name="FsdGuard",   # dist/FsdGuard/

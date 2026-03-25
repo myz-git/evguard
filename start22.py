@@ -9,8 +9,9 @@ from tkinter import messagebox, scrolledtext
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_FILE = os.path.join(BASE_DIR, "evguard_log.txt")
+LOG_FILE = os.path.join(BASE_DIR, "evguard.log")
 COMMANDS_FILE = os.path.join(BASE_DIR, "commands.json")
+CFG_FILE = os.path.join(BASE_DIR, "evguard.cfg")
 PROCESS_ORDER = ["Fsd0", "Fsd1", "GuardA", "GuardB"]
 DEFAULT_COMMANDS = {
     "Fsd0": os.path.join(BASE_DIR, "dist", "FsdGuard", "FSD0.exe"),
